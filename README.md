@@ -11,6 +11,13 @@
     <a href="#dashboard">Dashboard</a> &middot;
     <a href="#deployment">Deployment</a>
   </p>
+  <p align="center">
+    <a href="https://hub.docker.com/r/arrrrniii/mediaos"><img src="https://img.shields.io/docker/pulls/arrrrniii/mediaos?style=flat&logo=docker&label=Docker%20Pulls" alt="Docker Pulls" /></a>
+    <a href="https://hub.docker.com/r/arrrrniii/mediaos"><img src="https://img.shields.io/docker/image-size/arrrrniii/mediaos/worker?style=flat&logo=docker&label=Worker" alt="Worker Size" /></a>
+    <a href="https://hub.docker.com/r/arrrrniii/mediaos"><img src="https://img.shields.io/docker/image-size/arrrrniii/mediaos/dashboard?style=flat&logo=docker&label=Dashboard" alt="Dashboard Size" /></a>
+    <a href="https://www.npmjs.com/package/@mediavault/sdk"><img src="https://img.shields.io/npm/v/@mediavault/sdk?style=flat&logo=npm&label=SDK" alt="npm" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/arrrrniii/MediaOs?style=flat" alt="License" /></a>
+  </p>
 </p>
 
 ---
