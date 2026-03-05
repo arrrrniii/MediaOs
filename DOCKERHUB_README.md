@@ -51,7 +51,15 @@ docker compose -f docker-compose.hub.yml up -d
 
 - **Dashboard:** http://localhost:3001 (setup wizard on first launch)
 - **API:** http://localhost:3000
-- **MinIO Console:** http://localhost:9001
+
+### API-only mode (no dashboard)
+
+```bash
+# In .env, set:
+COMPOSE_PROFILES=
+```
+
+Run `docker compose up -d` — only the worker API and infrastructure start. Manage everything via API.
 
 ---
 
@@ -83,11 +91,13 @@ MediaOS runs as a 6-service stack:
 | Service | Image | Port | Role |
 |---------|-------|------|------|
 | **Worker API** | `arrrrniii/mediaos:worker` | 3000 | Upload, process, serve, API |
-| **Dashboard** | `arrrrniii/mediaos:dashboard` | 3001 | Admin panel, analytics |
-| **PostgreSQL** | `postgres:16-alpine` | 5432 | Metadata, accounts, keys |
-| **MinIO** | `minio/minio:latest` | 9000, 9001 | S3-compatible object storage |
-| **Redis** | `redis:7-alpine` | 6379 | Rate limiting, caching |
-| **imgproxy** | `darthsim/imgproxy:latest` | (internal) | On-the-fly image resizing |
+| **Dashboard** | `arrrrniii/mediaos:dashboard` | 3001 (optional) | Admin panel, analytics |
+| **PostgreSQL** | `postgres:16-alpine` | internal | Metadata, accounts, keys |
+| **MinIO** | `minio/minio:latest` | internal | S3-compatible object storage |
+| **Redis** | `redis:7-alpine` | internal | Rate limiting, caching |
+| **imgproxy** | `darthsim/imgproxy:latest` | internal | On-the-fly image resizing |
+
+Only the Worker API and Dashboard expose ports. All infrastructure communicates over Docker's internal network.
 
 ---
 
@@ -111,6 +121,14 @@ Every image gets instant resize URLs powered by imgproxy:
 /img/auto/800/0/f/{key}          → Smart resize, 800px wide
 ```
 
+### Dashboard
+
+- File browser with image previews and preview modal
+- Single file download and bulk ZIP export for backups
+- API key management, webhook management, usage analytics
+- Auto-update notification when a new release is available
+- Dark/light theme, responsive design
+
 ### Multi-Tenant
 
 - **Accounts** with multiple projects
@@ -126,6 +144,14 @@ Every image gets instant resize URLs powered by imgproxy:
 - Parameterized SQL (no injection)
 - Helmet security headers
 
+### Deployment
+
+- One-line installer with smart port detection
+- Optional dashboard (API-only mode via `COMPOSE_PROFILES=`)
+- Reverse proxy configs for Nginx, Caddy, and Traefik
+- One-line updater: `curl -fsSL .../update.sh | bash`
+- Zero-downtime updates — data lives in Docker volumes
+
 ---
 
 ## Configuration
@@ -140,6 +166,7 @@ Key environment variables (see `.env.example` for full list):
 | `REDIS_PASSWORD` | Yes | Redis password |
 | `NEXTAUTH_SECRET` | Yes | Dashboard session encryption |
 | `PUBLIC_URL` | No | Public URL (default: `http://localhost:3000`) |
+| `COMPOSE_PROFILES` | No | Set to `dashboard` to enable admin panel (default), empty for API-only |
 | `WEBP_QUALITY` | No | Image quality 1-100 (default: `80`) |
 | `VIDEO_CRF` | No | Video quality, lower=better (default: `20`) |
 | `MAX_FILE_SIZE` | No | Max upload bytes (default: `104857600` / 100MB) |
@@ -195,6 +222,16 @@ curl -X POST http://localhost:3000/api/v1/upload \
   "processing_ms": 124
 }
 ```
+
+---
+
+## Updating
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/update.sh | bash
+```
+
+Or manually: `docker compose pull && docker compose up -d`. Your data is safe — everything lives in Docker volumes.
 
 ---
 
