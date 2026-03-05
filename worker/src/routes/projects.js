@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const adminAuth = require('../middleware/adminAuth');
 const { query } = require('../db');
 const { getCurrentUsage } = require('../services/usageService');
+const { removeObject } = require('../minio');
 
 const router = Router();
 
@@ -219,19 +220,31 @@ router.delete('/api/v1/projects/:id', adminAuth, async (req, res, next) => {
       });
     }
 
-    // Cascade: soft-delete all files
-    query(
+    // Get all files to delete from storage
+    const { rows: files } = await query(
+      'SELECT storage_key, thumbnail_key FROM files WHERE project_id = $1 AND deleted_at IS NULL',
+      [projectId]
+    );
+
+    // Soft-delete all files in DB
+    await query(
       'UPDATE files SET deleted_at = NOW() WHERE project_id = $1 AND deleted_at IS NULL',
       [projectId]
-    ).catch(() => {});
+    );
 
-    // Cascade: revoke all API keys
-    query(
+    // Revoke all API keys
+    await query(
       "UPDATE api_keys SET status = 'revoked' WHERE project_id = $1 AND status = 'active'",
       [projectId]
-    ).catch(() => {});
+    );
 
-    res.json({ deleted: true, id: projectId });
+    // Delete files from MinIO storage (fire-and-forget)
+    for (const file of files) {
+      removeObject(file.storage_key).catch(() => {});
+      if (file.thumbnail_key) removeObject(file.thumbnail_key).catch(() => {});
+    }
+
+    res.json({ deleted: true, id: projectId, files_deleted: files.length });
   } catch (err) {
     next(err);
   }

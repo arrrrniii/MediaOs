@@ -226,18 +226,28 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base text-destructive">Danger Zone</CardTitle>
           <CardDescription>
-            Permanently delete this project and all its files.
+            Once you delete a project, there is no going back.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm">
+            <p className="font-medium text-destructive">Deleting this project will permanently remove:</p>
+            <ul className="mt-2 list-inside list-disc space-y-1 text-muted-foreground">
+              <li>All uploaded files ({project.file_count} files) and their storage</li>
+              <li>All API keys associated with this project</li>
+              <li>All webhooks and their delivery history</li>
+              <li>All usage data and analytics</li>
+            </ul>
+          </div>
           <div className="space-y-2">
             <Label>
-              Type <span className="font-semibold">{project.name}</span> to confirm
+              Type <span className="font-mono font-semibold text-destructive">{project.name}</span> to confirm
             </Label>
             <Input
               value={deleteConfirm}
               onChange={(e) => setDeleteConfirm(e.target.value)}
               placeholder={project.name}
+              className="font-mono"
             />
           </div>
           <AlertDialog>
@@ -251,10 +261,10 @@ export default function SettingsPage() {
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>Delete project?</AlertDialogTitle>
+                <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This will permanently delete <strong>{project.name}</strong> and all its files.
-                  This action cannot be undone.
+                  This will permanently delete <strong>{project.name}</strong>, all {project.file_count} files,
+                  API keys, and webhooks. This action cannot be undone.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -264,7 +274,7 @@ export default function SettingsPage() {
                   disabled={deleting}
                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 >
-                  {deleting ? 'Deleting...' : 'Delete'}
+                  {deleting ? 'Deleting...' : 'Yes, delete everything'}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>

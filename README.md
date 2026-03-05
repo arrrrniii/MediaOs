@@ -15,6 +15,10 @@
 
 ---
 
+https://github.com/arrrrniii/MediaOs/raw/main/demo.mp4
+
+---
+
 **MediaOS** is an open-source, self-hosted media CDN built for developers. It handles the full lifecycle of media files — upload, process, store, transform, and serve — so you don't have to stitch together S3, image resizers, video transcoders, and CDN configs yourself.
 
 Upload an image and get back an optimized WebP with instant resize URLs. Upload a video and get an H.264 MP4 with a thumbnail. Everything is served with proper caching headers, range requests, and CORS — ready for production.
