@@ -1,0 +1,156 @@
+# Docker Compose using pre-built images from Docker Hub
+# Usage: docker compose -f docker-compose.hub.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mv-postgres
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-mediaos}
+      POSTGRES_USER: ${PG_USER:-mediaos}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-changeme_pg_password}
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-mediaos}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mediaos
+
+  minio:
+    image: minio/minio:latest
+    container_name: mv-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mvadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme_minio_password}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mediaos
+
+  redis:
+    image: redis:7-alpine
+    container_name: mv-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme_redis_password}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme_redis_password}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - mediaos
+
+  imgproxy:
+    image: darthsim/imgproxy:latest
+    container_name: mv-imgproxy
+    environment:
+      IMGPROXY_USE_S3: "true"
+      IMGPROXY_S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-mvadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-changeme_minio_password}
+      AWS_REGION: us-east-1
+      IMGPROXY_PREFERRED_FORMATS: webp
+      IMGPROXY_ENFORCE_WEBP: "true"
+      IMGPROXY_QUALITY: ${WEBP_QUALITY:-80}
+      IMGPROXY_WEBP_QUALITY: ${WEBP_QUALITY:-80}
+      IMGPROXY_MAX_SRC_RESOLUTION: 50
+      IMGPROXY_CONCURRENCY: 10
+      IMGPROXY_SET_CACHE_CONTROL: "public, max-age=31536000"
+      IMGPROXY_ALLOW_ORIGIN: "*"
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mediaos
+
+  worker:
+    image: arrrrniii/mediaos:worker
+    container_name: mv-worker
+    ports:
+      - "${API_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DATABASE: ${PG_DATABASE:-mediaos}
+      PG_USER: ${PG_USER:-mediaos}
+      PG_PASSWORD: ${PG_PASSWORD:-changeme_pg_password}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mvadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-changeme_minio_password}
+      MINIO_BUCKET: ${MINIO_BUCKET:-mediaos}
+      IMGPROXY_URL: http://imgproxy:8080
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme_redis_password}@redis:6379
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      MASTER_KEY: ${MASTER_KEY:-}
+      WEBP_QUALITY: ${WEBP_QUALITY:-80}
+      MAX_WIDTH: ${MAX_WIDTH:-1600}
+      MAX_HEIGHT: ${MAX_HEIGHT:-1600}
+      VIDEO_CRF: ${VIDEO_CRF:-20}
+      VIDEO_MAX_HEIGHT: ${VIDEO_MAX_HEIGHT:-1080}
+      MAX_FILE_SIZE: ${MAX_FILE_SIZE:-104857600}
+      CONCURRENCY: ${CONCURRENCY:-3}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - mediaos
+
+  dashboard:
+    image: arrrrniii/mediaos:dashboard
+    container_name: mv-dashboard
+    ports:
+      - "${DASHBOARD_PORT:-3001}:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:3000}
+      INTERNAL_API_URL: http://worker:3000
+      NEXTAUTH_URL: ${DASHBOARD_URL:-http://localhost:3001}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-changeme_nextauth_secret}
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_DATABASE: ${PG_DATABASE:-mediaos}
+      PG_USER: ${PG_USER:-mediaos}
+      PG_PASSWORD: ${PG_PASSWORD:-changeme_pg_password}
+    depends_on:
+      - worker
+    restart: unless-stopped
+    networks:
+      - mediaos
+
+volumes:
+  pg_data:
+  minio_data:
+  redis_data:
+
+networks:
+  mediaos:
+    driver: bridge

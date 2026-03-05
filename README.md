@@ -705,6 +705,21 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 Free to use for personal and commercial projects.
 
+## Also by ARN
+
+<table>
+  <tr>
+    <td width="80" align="center">
+      <img src="https://sendmailos.com/favicon.ico" width="48" alt="SendMailOS" />
+    </td>
+    <td>
+      <strong><a href="https://sendmailos.com">SendMailOS</a></strong> — Email marketing platform built on AWS SES.<br />
+      Send campaigns, automate workflows, manage subscribers. 2,000+ free emails every month.<br />
+      <a href="https://sendmailos.com">sendmailos.com</a>
+    </td>
+  </tr>
+</table>
+
 ---
 
 Built by [ARN](https://www.instagram.com/arrrrniii/)

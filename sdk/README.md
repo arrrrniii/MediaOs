@@ -528,6 +528,10 @@ Then create a project and API key via the dashboard at `http://localhost:3001`.
 - Node.js 18+ (uses native `fetch`)
 - MediaOS server v1.0+
 
+## Also by ARN
+
+> **[SendMailOS](https://sendmailos.com)** — Email marketing platform built on AWS SES. Send campaigns, automate workflows, manage subscribers. **2,000+ free emails every month.** Try it at [sendmailos.com](https://sendmailos.com)
+
 ## License
 
 MIT
