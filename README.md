@@ -707,15 +707,40 @@ Full key:                               → SHA-256 hashed for validation
 
 Keys are scoped with permissions: `upload`, `read`, `delete`, `admin`.
 
+## Roadmap
+
+MediaOS is evolving from a media CDN into a **complete open-source media infrastructure platform** — self-hosted Netflix/YouTube backend that anyone can run.
+
+| Phase | Status | What's Coming |
+|-------|--------|---------------|
+| **v1 — Media CDN** | **Done** | Upload, process, serve images/videos/files with resizing |
+| **v2 — Streaming** | **Next** | HLS/DASH adaptive streaming, video player SDK, playlists |
+| **v3 — Security** | Planned | DRM (Widevine/FairPlay), geo-restrictions, watermarking |
+| **v4 — Scale** | Planned | Multi-node, edge caching, S3/R2/B2 backends |
+| **v5 — Intelligence** | Planned | AI tagging, content moderation, smart thumbnails, search |
+
+See the full **[Roadmap](ROADMAP.md)** for detailed feature breakdown.
+
 ## Contributing
 
-Contributions are welcome! Feel free to open issues and pull requests.
+We're looking for contributors to help build the next phases. Whether it's HLS streaming, a video player component, or better S3 backend support — there's a lot to build.
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+```bash
+# Set up dev environment
+cp .env.example .env
+docker compose up postgres minio redis imgproxy -d
+cd worker && npm install && npm run dev
+cd dashboard && npm install && npm run dev -- -p 3001
+```
+
+Check out **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full guide, code style, and areas we need help with.
+
+**Good first contributions:**
+- Bug fixes and documentation
+- S3-compatible backend support (AWS S3, R2, B2)
+- HLS video streaming pipeline
+- Embeddable video player component
+- Dashboard improvements
 
 ## License
 
