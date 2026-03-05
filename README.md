@@ -25,15 +25,34 @@ Upload an image and get back an optimized WebP with instant resize URLs. Upload 
 
 ## Quick Start
 
-### 1. Clone and configure
+### Option A: Docker Hub (fastest)
+
+Pre-built images — no cloning or building required:
+
+```bash
+# Download the compose file
+curl -O https://raw.githubusercontent.com/arrrrniii/MediaOs/main/docker-compose.hub.yml
+curl -O https://raw.githubusercontent.com/arrrrniii/MediaOs/main/.env.example
+cp .env.example .env
+
+# Generate a master key and add to .env
+node -e "console.log('mv_master_' + require('crypto').randomBytes(24).toString('hex'))"
+
+# Start everything
+docker compose -f docker-compose.hub.yml up -d
+```
+
+Dashboard: `http://localhost:3001` · API: `http://localhost:3000`
+
+### Option B: Build from source
 
 ```bash
 git clone https://github.com/arrrrniii/MediaOs.git
-cd mediaos
+cd MediaOs
 cp .env.example .env
 ```
 
-### 2. Generate your master key
+Generate your master key:
 
 ```bash
 node -e "console.log('mv_master_' + require('crypto').randomBytes(24).toString('hex'))"
@@ -41,7 +60,7 @@ node -e "console.log('mv_master_' + require('crypto').randomBytes(24).toString('
 
 Paste the output into `.env` as the `MASTER_KEY` value.
 
-### 3. Start everything
+Start everything:
 
 ```bash
 docker compose up -d
