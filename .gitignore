@@ -41,3 +41,8 @@ coverage/
 
 # Next.js
 .vercel
+
+# Claude
+.claude/
+CLAUDE.md
+info.md

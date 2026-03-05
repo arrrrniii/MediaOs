@@ -54,24 +54,39 @@ This starts 6 services:
 | **Redis** | `6379` | Rate limiting and caching |
 | **imgproxy** | (internal) | On-the-fly image resizing |
 
-### 4. Create an account and project
+### 4. Create your admin account
+
+Open the dashboard at `http://localhost:3001`. On first launch, a **setup wizard** will guide you through creating your admin account.
+
+Alternatively, create an account via environment variables (headless):
 
 ```bash
-# Create an account
-curl -X POST http://localhost:3000/api/v1/accounts \
-  -H "Authorization: Bearer YOUR_MASTER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "My Company", "email": "dev@mycompany.com"}'
+# Add to .env before starting
+ADMIN_EMAIL=admin@yoursite.com
+ADMIN_PASSWORD=your_secure_password
+```
 
+Or via the API:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/accounts \
+  -H "X-API-Key: YOUR_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Admin", "email": "admin@yoursite.com", "password": "your_password"}'
+```
+
+Then create a project and API key from the dashboard, or via API:
+
+```bash
 # Create a project
 curl -X POST http://localhost:3000/api/v1/projects \
-  -H "Authorization: Bearer YOUR_MASTER_KEY" \
+  -H "X-API-Key: YOUR_MASTER_KEY" \
   -H "Content-Type: application/json" \
   -d '{"account_id": "ACCOUNT_ID", "name": "my-app", "slug": "my-app"}'
 
 # Create an API key
 curl -X POST http://localhost:3000/api/v1/projects/PROJECT_ID/keys \
-  -H "Authorization: Bearer YOUR_MASTER_KEY" \
+  -H "X-API-Key: YOUR_MASTER_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name": "Production Key", "scopes": ["upload", "read", "delete"]}'
 ```
@@ -277,8 +292,7 @@ mediaos/
 │       └── types.ts           # All type definitions
 │
 ├── docker-compose.yml         # Full stack deployment
-├── .env.example               # Configuration template
-└── info.md                    # Complete architecture spec
+└── .env.example               # Configuration template
 ```
 
 ## API Reference
@@ -479,7 +493,7 @@ The built-in admin dashboard runs at `http://localhost:3001` and provides:
 
 ### Login
 
-The dashboard uses NextAuth with credential-based authentication. Accounts are created via the admin API and can log in with their email and password.
+The dashboard uses NextAuth with credential-based authentication. On first launch, a setup wizard creates your admin account. After that, log in with your email and password.
 
 ## Configuration
 
@@ -713,7 +727,7 @@ Free to use for personal and commercial projects.
       <img src="https://sendmailos.com/favicon.ico" width="48" alt="SendMailOS" />
     </td>
     <td>
-      <strong><a href="https://sendmailos.com">SendMailOS</a></strong> — Email marketing platform built on AWS SES.<br />
+      <strong><a href="https://sendmailos.com">SendMailOS</a></strong> — Email marketing platform.<br />
       Send campaigns, automate workflows, manage subscribers. 2,000+ free emails every month.<br />
       <a href="https://sendmailos.com">sendmailos.com</a>
     </td>
