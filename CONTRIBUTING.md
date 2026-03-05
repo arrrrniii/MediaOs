@@ -41,12 +41,31 @@ cd dashboard && npm install && npm run dev -- -p 3001
 - Look for `help wanted` labels for bigger features
 - Check the [Roadmap](ROADMAP.md) for the next milestone
 
+### Branch Strategy
+
+We use a multi-branch workflow:
+
+```
+development  ← PRs go here (active work)
+    ↓
+staging      ← testing & QA before release
+    ↓
+production   ← stable releases, Docker Hub builds
+```
+
+- **`development`** — All PRs and feature branches target this branch
+- **`staging`** — Merged from development for testing before release
+- **`production`** — Stable, production-ready code. Docker Hub images are built from here
+- **`main`** — Mirror of production (do not PR directly to main)
+
 ### Pull Request Process
 
-1. Create a feature branch from `main`
-2. Make your changes
-3. Test locally with Docker Compose
-4. Submit a PR with a clear description of what and why
+1. Fork the repository
+2. Create a feature branch from `development`
+3. Make your changes
+4. Test locally with Docker Compose
+5. Submit a PR targeting the **`development`** branch
+6. Include a clear description of what and why
 
 ### Code Style
 
