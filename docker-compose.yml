@@ -124,6 +124,7 @@ services:
   dashboard:
     build: ./dashboard
     container_name: mv-dashboard
+    profiles: ["dashboard"]
     ports:
       - "${DASHBOARD_PORT:-3001}:3001"
     environment:

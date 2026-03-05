@@ -204,6 +204,8 @@ if [ ! -f .env ]; then
   $SED_CMD "s|^DASHBOARD_PORT=.*|DASHBOARD_PORT=$DASHBOARD_PORT|" .env
   $SED_CMD "s|^PUBLIC_URL=.*|PUBLIC_URL=http://localhost:$API_PORT|" .env
   $SED_CMD "s|^DASHBOARD_URL=.*|DASHBOARD_URL=http://localhost:$DASHBOARD_PORT|" .env
+  # Ensure dashboard profile is enabled
+  grep -q '^COMPOSE_PROFILES' .env || echo "COMPOSE_PROFILES=dashboard" >> .env
 
   rm -f .env''
 

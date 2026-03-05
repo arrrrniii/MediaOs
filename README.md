@@ -91,6 +91,22 @@ This starts 6 services:
 
 Only the API and Dashboard are exposed. All infrastructure services communicate over the internal Docker network.
 
+### API-only mode (no dashboard)
+
+If you only need the API and don't want the dashboard, disable it in `.env`:
+
+```bash
+COMPOSE_PROFILES=
+```
+
+Then restart:
+
+```bash
+docker compose up -d
+```
+
+This runs only the worker API and infrastructure services. You can manage everything via the API using your master key.
+
 ### Create your admin account
 
 Open the dashboard at `http://localhost:3001`. On first launch, a **setup wizard** will guide you through creating your admin account.
