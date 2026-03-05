@@ -55,7 +55,7 @@ router.get('/health', async (req, res) => {
 
   res.status(status).json({
     status: allOk ? 'ok' : 'degraded',
-    version: '1.0.0',
+    version: require('../../package.json').version,
     uptime: Math.floor(process.uptime()),
     queue,
     services,

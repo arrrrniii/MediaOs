@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSession, signOut } from 'next-auth/react';
@@ -13,6 +14,7 @@ import {
   ChevronRight,
   LogOut,
   BookOpen,
+  ArrowUpCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -23,9 +25,31 @@ const navItems = [
   { href: '/dashboard/account', label: 'Account', icon: Settings },
 ];
 
+function useUpdateCheck() {
+  const [update, setUpdate] = useState<{
+    has_update: boolean;
+    latest_version: string;
+    current_version: string;
+    release_url: string;
+    update_command: string;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/system/update-check')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.has_update) setUpdate(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  return update;
+}
+
 function NavContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { data: session } = useSession();
+  const update = useUpdateCheck();
 
   const initials = session?.user?.name
     ?.split(' ')
@@ -36,6 +60,32 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="flex flex-1 flex-col">
+      {/* Update banner */}
+      {update && (
+        <div className="mx-3 mt-3 rounded-lg border border-emerald-500/30 bg-gradient-to-br from-emerald-500/10 to-green-500/5 px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            <ArrowUpCircle className="h-4 w-4 text-emerald-400" />
+            <p className="text-[11px] font-semibold text-emerald-400">Update available</p>
+          </div>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            v{update.current_version} → v{update.latest_version}
+          </p>
+          <code className="mt-1.5 block rounded bg-muted/50 px-2 py-1 text-[9px] text-muted-foreground">
+            {update.update_command}
+          </code>
+          {update.release_url && (
+            <a
+              href={update.release_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-1.5 inline-block text-[10px] font-medium text-emerald-400/80 transition-colors hover:text-emerald-400"
+            >
+              Release notes &rarr;
+            </a>
+          )}
+        </div>
+      )}
+
       {/* Navigation */}
       <nav className="flex-1 space-y-0.5 px-3 py-4">
         <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">

@@ -22,7 +22,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { Copy, Trash2, ExternalLink, X, ImageIcon, FileVideo, FileAudio, FileText } from 'lucide-react';
+import { Copy, Trash2, ExternalLink, X, ImageIcon, FileVideo, FileAudio, FileText, Download } from 'lucide-react';
 
 function CopyRow({ text, label }: { text: string; label: string }) {
   return (
@@ -184,6 +184,12 @@ export default function FilePreview({
                   </a>
                 </Button>
               )}
+              <Button variant="outline" size="sm" asChild className="flex-1">
+                <a href={`/api/projects/${file.project_id}/files/${file.id}/download`} download>
+                  <Download className="mr-2 h-3.5 w-3.5" />
+                  Download
+                </a>
+              </Button>
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button
