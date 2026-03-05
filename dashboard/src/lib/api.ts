@@ -1,4 +1,4 @@
-const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+const API_URL = process.env.INTERNAL_API_URL || process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 const MASTER_KEY = process.env.MASTER_KEY || '';
 
 class ApiError extends Error {

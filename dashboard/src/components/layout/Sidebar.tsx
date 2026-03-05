@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useSession, signOut } from 'next-auth/react';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
@@ -9,43 +10,100 @@ import {
   Settings,
   HardDrive,
   X,
+  ChevronRight,
+  LogOut,
+  BookOpen,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 const navItems = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
   { href: '/dashboard/projects', label: 'Projects', icon: FolderKanban },
+  { href: '/dashboard/docs', label: 'Docs', icon: BookOpen },
   { href: '/dashboard/account', label: 'Account', icon: Settings },
 ];
 
 function NavContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const { data: session } = useSession();
+
+  const initials = session?.user?.name
+    ?.split(' ')
+    .map((n) => n[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2) || 'U';
 
   return (
-    <nav className="flex-1 space-y-1 p-2">
-      {navItems.map((item) => {
-        const active =
-          item.href === '/dashboard'
-            ? pathname === '/dashboard'
-            : pathname.startsWith(item.href);
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={onNavigate}
-            className={cn(
-              'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-              active
-                ? 'bg-primary/10 text-primary'
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-            )}
+    <div className="flex flex-1 flex-col">
+      {/* Navigation */}
+      <nav className="flex-1 space-y-0.5 px-3 py-4">
+        <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+          Menu
+        </p>
+        {navItems.map((item) => {
+          const active =
+            item.href === '/dashboard'
+              ? pathname === '/dashboard'
+              : pathname.startsWith(item.href);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={onNavigate}
+              className={cn(
+                'group flex items-center gap-3 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-all',
+                active
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+              )}
+            >
+              <item.icon className={cn('h-4 w-4 shrink-0', active ? 'text-primary-foreground' : 'text-muted-foreground/70 group-hover:text-foreground')} />
+              <span className="flex-1">{item.label}</span>
+              {active && <ChevronRight className="h-3.5 w-3.5 opacity-50" />}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {/* SendMailOS promo */}
+      <div className="px-3 pb-2">
+        <a
+          href="https://sendmailos.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group block rounded-lg border border-border/50 bg-gradient-to-br from-orange-500/10 to-amber-500/5 px-3 py-2.5 transition-all hover:border-orange-500/30 hover:shadow-sm"
+        >
+          <p className="text-[11px] font-semibold text-orange-400">SendMailOS</p>
+          <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground">
+            Email platform. 2,000+ free emails/month.
+          </p>
+          <span className="mt-1 inline-block text-[10px] font-medium text-orange-400/80 transition-colors group-hover:text-orange-400">
+            Try free &rarr;
+          </span>
+        </a>
+      </div>
+
+      {/* Bottom user section */}
+      <div className="border-t px-3 py-3">
+        <div className="flex items-center gap-2.5 rounded-lg px-2.5 py-2">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-bold text-primary">
+            {initials}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] font-medium leading-none">{session?.user?.name || 'User'}</p>
+            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{session?.user?.email}</p>
+          </div>
+          <button
+            onClick={() => signOut({ callbackUrl: '/login' })}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+            title="Sign out"
           >
-            <item.icon className="h-4 w-4" />
-            {item.label}
-          </Link>
-        );
-      })}
-    </nav>
+            <LogOut className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -59,10 +117,12 @@ export default function Sidebar({
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden h-screen w-56 shrink-0 flex-col border-r bg-card md:flex">
-        <div className="flex h-14 items-center gap-2 border-b px-4">
-          <HardDrive className="h-5 w-5 text-primary" />
-          <span className="font-semibold tracking-tight">MediaOS</span>
+      <aside className="hidden h-screen w-[220px] shrink-0 flex-col border-r border-border/50 bg-card/50 backdrop-blur-sm md:flex">
+        <div className="flex h-14 items-center gap-2.5 border-b border-border/50 px-5">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary shadow-sm">
+            <HardDrive className="h-3.5 w-3.5 text-primary-foreground" />
+          </div>
+          <span className="text-[15px] font-semibold tracking-tight">MediaOS</span>
         </div>
         <NavContent />
       </aside>
@@ -74,13 +134,15 @@ export default function Sidebar({
             className="fixed inset-0 z-40 bg-background/80 backdrop-blur-sm md:hidden"
             onClick={onClose}
           />
-          <aside className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r bg-card shadow-lg md:hidden">
-            <div className="flex h-14 items-center justify-between border-b px-4">
-              <div className="flex items-center gap-2">
-                <HardDrive className="h-5 w-5 text-primary" />
-                <span className="font-semibold tracking-tight">MediaOS</span>
+          <aside className="fixed inset-y-0 left-0 z-50 flex w-[260px] flex-col border-r border-border/50 bg-card shadow-xl md:hidden">
+            <div className="flex h-14 items-center justify-between border-b border-border/50 px-5">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary shadow-sm">
+                  <HardDrive className="h-3.5 w-3.5 text-primary-foreground" />
+                </div>
+                <span className="text-[15px] font-semibold tracking-tight">MediaOS</span>
               </div>
-              <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
                 <X className="h-4 w-4" />
               </Button>
             </div>

@@ -315,6 +315,7 @@ function formatResponse(row, projectId) {
   const urls = buildUrls(config.publicUrl, projectId, row.storage_key, row.type);
   return {
     id: row.id,
+    project_id: projectId,
     filename: row.filename,
     url: urls.original,
     storage_key: row.storage_key,

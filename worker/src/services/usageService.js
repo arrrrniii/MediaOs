@@ -139,18 +139,24 @@ async function getCurrentUsage(project) {
     else filesByType.other += parseInt(row.count);
   }
 
-  // Get plan limits
-  const { rows: planRows } = await query(
-    `SELECT p.* FROM plans p
-     JOIN accounts a ON a.plan = p.id
-     JOIN projects pr ON pr.account_id = a.id
-     WHERE pr.id = $1`,
-    [project.id]
-  );
-
-  const plan = planRows[0] || {};
-  const storageLimit = plan.max_storage || 1073741824;
-  const bandwidthLimit = plan.max_bandwidth || 5368709120;
+  // Get plan limits (optional — only if plans table exists and has data)
+  let storageLimit = null;
+  let bandwidthLimit = null;
+  try {
+    const { rows: planRows } = await query(
+      `SELECT p.* FROM plans p
+       JOIN accounts a ON a.plan = p.id
+       JOIN projects pr ON pr.account_id = a.id
+       WHERE pr.id = $1`,
+      [project.id]
+    );
+    if (planRows[0]) {
+      storageLimit = planRows[0].max_storage || null;
+      bandwidthLimit = planRows[0].max_bandwidth || null;
+    }
+  } catch {
+    // plans table may not exist — self-hosted has no limits
+  }
 
   const usage = usageRows[0];
   const storageUsed = parseInt(project.storage_used) || 0;
@@ -162,12 +168,12 @@ async function getCurrentUsage(project) {
     storage: {
       used: storageUsed,
       limit: storageLimit,
-      percent: storageLimit > 0 ? Math.round((storageUsed / storageLimit) * 1000) / 10 : 0,
+      percent: storageLimit ? Math.round((storageUsed / storageLimit) * 1000) / 10 : null,
     },
     bandwidth: {
       used: bandwidthUsed,
       limit: bandwidthLimit,
-      percent: bandwidthLimit > 0 ? Math.round((bandwidthUsed / bandwidthLimit) * 1000) / 10 : 0,
+      percent: bandwidthLimit ? Math.round((bandwidthUsed / bandwidthLimit) * 1000) / 10 : null,
     },
     uploads: parseInt(usage.uploads) || 0,
     downloads: parseInt(usage.downloads) || 0,

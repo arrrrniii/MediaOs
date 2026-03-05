@@ -15,6 +15,7 @@ const usageRoutes = require('./routes/usage');
 const adminFileRoutes = require('./routes/adminFiles');
 const adminWebhookRoutes = require('./routes/adminWebhooks');
 const adminUsageRoutes = require('./routes/adminUsage');
+const setupRoutes = require('./routes/setup');
 const Queue = require('./services/queue');
 const config = require('./config');
 
@@ -46,6 +47,9 @@ function createApp() {
 
   // Health check (no auth)
   app.use(healthRoutes);
+
+  // Setup route (no auth — only works when 0 accounts exist)
+  app.use(setupRoutes);
 
   // Admin routes (master key auth)
   app.use(accountRoutes);

@@ -27,6 +27,10 @@ module.exports = {
   publicUrl: (process.env.PUBLIC_URL || 'http://localhost:3000').replace(/\/$/, ''),
   masterKey: process.env.MASTER_KEY || '',
 
+  // Initial admin (created on first boot if no accounts exist)
+  adminEmail: process.env.ADMIN_EMAIL || '',
+  adminPassword: process.env.ADMIN_PASSWORD || '',
+
   // Processing
   webpQuality: parseInt(process.env.WEBP_QUALITY || '80'),
   maxWidth: parseInt(process.env.MAX_WIDTH || '1600'),

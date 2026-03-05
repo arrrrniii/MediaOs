@@ -1,6 +1,7 @@
 const config = require('./config');
 const { pool } = require('./db');
 const { migrate } = require('../migrations/migrate');
+const { seedAdmin } = require('./seed');
 const { ensureBucket } = require('./minio');
 const createApp = require('./app');
 
@@ -29,7 +30,14 @@ async function boot() {
     process.exit(1);
   }
 
-  // 4. Connect to MinIO, ensure bucket exists
+  // 4. Seed first admin account if none exist
+  try {
+    await seedAdmin();
+  } catch (err) {
+    console.error('Admin seed failed:', err.message);
+  }
+
+  // 5. Connect to MinIO, ensure bucket exists
   try {
     await ensureBucket();
     console.log('MinIO connected, bucket ready');
@@ -38,7 +46,7 @@ async function boot() {
     process.exit(1);
   }
 
-  // 5. Connect to Redis (optional, graceful fallback)
+  // 6. Connect to Redis (optional, graceful fallback)
   let redis = null;
   try {
     const Redis = require('ioredis');
@@ -53,11 +61,11 @@ async function boot() {
     redis = null;
   }
 
-  // 6. Create Express app
+  // 7. Create Express app
   const app = createApp();
   app.locals.redis = redis;
 
-  // 7. Start listening
+  // 8. Start listening
   app.listen(config.port, () => {
     console.log(`MediaOS worker listening on port ${config.port}`);
     console.log(`Environment: ${config.nodeEnv}`);

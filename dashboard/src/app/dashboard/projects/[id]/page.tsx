@@ -3,7 +3,7 @@ import { formatBytes, formatRelativeTime } from '@/lib/utils';
 import type { Project, FileRecord, PaginatedResponse } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Upload, ExternalLink } from 'lucide-react';
+import { Upload, ExternalLink, FileIcon } from 'lucide-react';
 import Link from 'next/link';
 
 export default async function ProjectDetailPage({
@@ -76,30 +76,41 @@ export default async function ProjectDetailPage({
               <Link href={`/dashboard/projects/${id}/files`}>View all</Link>
             </Button>
           </div>
-          <div className="space-y-2">
-            {recentFiles.map((file) => (
-              <div
-                key={file.id}
-                className="flex items-center justify-between rounded-md border p-3"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{file.original_name || file.filename}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatBytes(file.size)} &middot; {formatRelativeTime(file.created_at)}
-                  </p>
-                </div>
-                {file.url && (
-                  <a
-                    href={file.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="ml-2 text-muted-foreground hover:text-foreground"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
-                )}
-              </div>
-            ))}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            {recentFiles.map((file) => {
+              const isImage = file.type === 'image';
+              const thumbUrl = file.urls?.fit_400 || file.urls?.original || file.url;
+              return (
+                <a
+                  key={file.id}
+                  href={file.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group overflow-hidden rounded-lg border border-border/50 bg-card transition-all hover:border-primary/30 hover:shadow-md"
+                >
+                  <div className="aspect-[4/3] overflow-hidden bg-muted/30">
+                    {isImage && thumbUrl ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img
+                        src={thumbUrl}
+                        alt={file.filename}
+                        className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                      />
+                    ) : (
+                      <div className="flex h-full items-center justify-center">
+                        <FileIcon className="h-8 w-8 text-muted-foreground/40" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-2.5">
+                    <p className="truncate text-xs font-medium">{file.original_name || file.filename}</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      {formatBytes(file.size)} &middot; {formatRelativeTime(file.created_at)}
+                    </p>
+                  </div>
+                </a>
+              );
+            })}
           </div>
         </div>
       )}

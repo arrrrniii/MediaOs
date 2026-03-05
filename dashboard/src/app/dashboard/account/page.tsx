@@ -5,7 +5,6 @@ import { useSession } from 'next-auth/react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
@@ -84,22 +83,6 @@ export default function AccountPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Plan</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-3">
-            <Badge variant="secondary" className="text-sm">
-              {user?.plan || 'free'}
-            </Badge>
-            <span className="text-sm text-muted-foreground">
-              Current subscription plan
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-
       <Separator />
 
       <Card>
@@ -149,6 +132,7 @@ export default function AccountPage() {
           </form>
         </CardContent>
       </Card>
+
     </div>
   );
 }

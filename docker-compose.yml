@@ -132,12 +132,13 @@ services:
     build: ./dashboard
     container_name: mv-dashboard
     ports:
-      - "${DASHBOARD_PORT:-3001}:3000"
+      - "${DASHBOARD_PORT:-3001}:3001"
     environment:
       NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:3000}
       INTERNAL_API_URL: http://worker:3000
       NEXTAUTH_URL: ${DASHBOARD_URL:-http://localhost:3001}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-changeme_nextauth_secret}
+      MASTER_KEY: ${MASTER_KEY:-}
       PG_HOST: postgres
       PG_PORT: 5432
       PG_DATABASE: ${PG_DATABASE:-mediaos}

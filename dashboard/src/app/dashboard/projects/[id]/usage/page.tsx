@@ -86,18 +86,24 @@ export default function UsagePage() {
               <div className="text-2xl font-bold">
                 {formatBytes(usage.storage.used)}
               </div>
-              <div className="mt-2 h-2 rounded-full bg-muted">
-                <div
-                  className="h-2 rounded-full transition-all"
-                  style={{
-                    width: `${Math.max(Math.min(usage.storage.percent, 100), 2)}%`,
-                    backgroundColor: CHART_COLORS.blue,
-                  }}
-                />
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {usage.storage.percent.toFixed(1)}% of {formatBytes(usage.storage.limit)}
-              </p>
+              {usage.storage.limit ? (
+                <>
+                  <div className="mt-2 h-2 rounded-full bg-muted">
+                    <div
+                      className="h-2 rounded-full transition-all"
+                      style={{
+                        width: `${Math.max(Math.min(usage.storage.percent ?? 0, 100), 2)}%`,
+                        backgroundColor: CHART_COLORS.blue,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {(usage.storage.percent ?? 0).toFixed(1)}% of {formatBytes(usage.storage.limit)}
+                  </p>
+                </>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">No limit</p>
+              )}
             </CardContent>
           </Card>
           <Card>
@@ -111,18 +117,24 @@ export default function UsagePage() {
               <div className="text-2xl font-bold">
                 {formatBytes(usage.bandwidth.used)}
               </div>
-              <div className="mt-2 h-2 rounded-full bg-muted">
-                <div
-                  className="h-2 rounded-full transition-all"
-                  style={{
-                    width: `${Math.max(Math.min(usage.bandwidth.percent, 100), 2)}%`,
-                    backgroundColor: CHART_COLORS.green,
-                  }}
-                />
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {usage.bandwidth.percent.toFixed(1)}% of {formatBytes(usage.bandwidth.limit)}
-              </p>
+              {usage.bandwidth.limit ? (
+                <>
+                  <div className="mt-2 h-2 rounded-full bg-muted">
+                    <div
+                      className="h-2 rounded-full transition-all"
+                      style={{
+                        width: `${Math.max(Math.min(usage.bandwidth.percent ?? 0, 100), 2)}%`,
+                        backgroundColor: CHART_COLORS.green,
+                      }}
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {(usage.bandwidth.percent ?? 0).toFixed(1)}% of {formatBytes(usage.bandwidth.limit)}
+                  </p>
+                </>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">No limit</p>
+              )}
             </CardContent>
           </Card>
           <Card>
