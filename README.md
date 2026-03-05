@@ -85,10 +85,12 @@ This starts 6 services:
 |---------|------|-------------|
 | **Worker API** | `3000` | Express API — upload, serve, manage |
 | **Dashboard** | `3001` | Next.js admin panel |
-| **PostgreSQL** | `5432` | Database |
-| **MinIO** | `9000` / `9001` | S3-compatible object storage |
-| **Redis** | `6379` | Rate limiting and caching |
-| **imgproxy** | (internal) | On-the-fly image resizing |
+| **PostgreSQL** | internal | Database |
+| **MinIO** | internal | S3-compatible object storage |
+| **Redis** | internal | Rate limiting and caching |
+| **imgproxy** | internal | On-the-fly image resizing |
+
+Only the API and Dashboard are exposed. All infrastructure services communicate over the internal Docker network.
 
 ### 4. Create your admin account
 
@@ -327,6 +329,7 @@ mediaos/
 │       ├── index.ts           # MediaOS class
 │       └── types.ts           # All type definitions
 │
+├── deploy/                    # Nginx, Caddy, Traefik configs
 ├── docker-compose.yml         # Full stack deployment
 └── .env.example               # Configuration template
 ```
@@ -667,37 +670,18 @@ docker compose up -d
 curl http://localhost:3000/health
 ```
 
-### Behind a Reverse Proxy (Nginx)
+### Behind a Reverse Proxy
 
-```nginx
-server {
-    listen 443 ssl http2;
-    server_name cdn.yoursite.com;
+Put both services behind a single domain:
 
-    client_max_body_size 100M;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-
-server {
-    listen 443 ssl http2;
-    server_name admin.yoursite.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
 ```
+cdn.yoursite.com/api/v1/*  → worker:3000   (API)
+cdn.yoursite.com/f/*       → worker:3000   (file serving)
+cdn.yoursite.com/img/*     → worker:3000   (image resizing)
+cdn.yoursite.com/*         → dashboard:3001 (admin panel)
+```
+
+Ready-to-use configs for **Nginx**, **Caddy**, and **Traefik** are in the [`deploy/`](deploy/) directory.
 
 ### Environment Checklist
 

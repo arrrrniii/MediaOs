@@ -6,8 +6,6 @@ services:
       POSTGRES_DB: ${PG_DATABASE:-mediaos}
       POSTGRES_USER: ${PG_USER:-mediaos}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-changeme_pg_password}
-    ports:
-      - "${PG_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,9 +21,6 @@ services:
     image: minio/minio:latest
     container_name: mv-minio
     command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mvadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme_minio_password}
@@ -44,8 +39,6 @@ services:
     image: redis:7-alpine
     container_name: mv-redis
     command: redis-server --requirepass ${REDIS_PASSWORD:-changeme_redis_password}
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:

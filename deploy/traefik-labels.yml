@@ -1,0 +1,32 @@
+# MediaOS — Traefik labels
+# Add these labels to your existing docker-compose.yml services
+# Works with Traefik v2/v3 auto-discovery
+#
+# Prerequisites:
+#   - Traefik running with Docker provider enabled
+#   - MediaOS containers on the same Docker network as Traefik
+#
+# Usage:
+#   1. Add the labels below to worker and dashboard services
+#   2. Replace cdn.yourdomain.com with your domain
+#   3. Make sure both services are on your Traefik network
+
+# Add to worker service:
+worker:
+  labels:
+    - "traefik.enable=true"
+    - "traefik.http.routers.mediaos-api.rule=Host(`cdn.yourdomain.com`) && (PathPrefix(`/api/v1`) || PathPrefix(`/f/`) || PathPrefix(`/img/`) || Path(`/health`))"
+    - "traefik.http.routers.mediaos-api.entrypoints=websecure"
+    - "traefik.http.routers.mediaos-api.tls.certresolver=letsencrypt"
+    - "traefik.http.services.mediaos-api.loadbalancer.server.port=3000"
+
+# Add to dashboard service:
+dashboard:
+  labels:
+    - "traefik.enable=true"
+    - "traefik.http.routers.mediaos-dash.rule=Host(`cdn.yourdomain.com`) && !PathPrefix(`/api/v1`) && !PathPrefix(`/f/`) && !PathPrefix(`/img/`) && !Path(`/health`)"
+    - "traefik.http.routers.mediaos-dash.entrypoints=websecure"
+    - "traefik.http.routers.mediaos-dash.tls.certresolver=letsencrypt"
+    - "traefik.http.services.mediaos-dash.loadbalancer.server.port=3001"
+    # Lower priority so worker routes match first
+    - "traefik.http.routers.mediaos-dash.priority=1"

@@ -1,0 +1,34 @@
+# MediaOS — Caddy reverse proxy
+# Single domain setup with automatic HTTPS
+#
+# Usage:
+#   1. Replace cdn.yourdomain.com with your domain
+#   2. Copy to /etc/caddy/Caddyfile (or add to existing)
+#   3. sudo systemctl reload caddy
+
+cdn.yourdomain.com {
+    # API routes → Worker
+    handle /api/v1/* {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    # CDN file serving → Worker
+    handle /f/* {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    # Image resizing → Worker
+    handle /img/* {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    # Health check → Worker
+    handle /health {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    # Everything else → Dashboard
+    handle {
+        reverse_proxy 127.0.0.1:3001
+    }
+}

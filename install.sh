@@ -1,30 +1,23 @@
 #!/bin/bash
 # MediaOS Installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash
-#
-# Custom ports:
-#   curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash -s -- --api-port 4000 --dashboard-port 4001
-#
-# Custom directory:
-#   curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash -s -- myproject
 
 set -e
 
-BLUE='\033[0;34m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
+# Colors
+R='\033[0;31m'
+G='\033[0;32m'
+B='\033[0;34m'
+Y='\033[1;33m'
+M='\033[0;35m'
+C='\033[0;36m'
+W='\033[1;37m'
 DIM='\033[2m'
-NC='\033[0m'
 BOLD='\033[1m'
+NC='\033[0m'
 
-# Default ports
 API_PORT=3000
 DASHBOARD_PORT=3001
-PG_PORT=5432
-REDIS_PORT=6379
-MINIO_PORT=9000
-MINIO_CONSOLE_PORT=9001
 DIR="mediaos"
 
 # Parse arguments
@@ -32,23 +25,15 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --api-port) API_PORT="$2"; shift 2 ;;
     --dashboard-port) DASHBOARD_PORT="$2"; shift 2 ;;
-    --pg-port) PG_PORT="$2"; shift 2 ;;
-    --redis-port) REDIS_PORT="$2"; shift 2 ;;
-    --minio-port) MINIO_PORT="$2"; shift 2 ;;
-    --minio-console-port) MINIO_CONSOLE_PORT="$2"; shift 2 ;;
     --help|-h)
       echo "MediaOS Installer"
       echo ""
       echo "Usage: install.sh [OPTIONS] [DIRECTORY]"
       echo ""
       echo "Options:"
-      echo "  --api-port PORT            Worker API port (default: 3000)"
-      echo "  --dashboard-port PORT      Dashboard port (default: 3001)"
-      echo "  --pg-port PORT             PostgreSQL port (default: 5432)"
-      echo "  --redis-port PORT          Redis port (default: 6379)"
-      echo "  --minio-port PORT          MinIO S3 port (default: 9000)"
-      echo "  --minio-console-port PORT  MinIO console port (default: 9001)"
-      echo "  -h, --help                 Show this help"
+      echo "  --api-port PORT        API port (default: 3000)"
+      echo "  --dashboard-port PORT  Dashboard port (default: 3001)"
+      echo "  -h, --help             Show this help"
       exit 0
       ;;
     -*) echo "Unknown option: $1"; exit 1 ;;
@@ -56,24 +41,86 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-echo ""
-echo -e "${BLUE}${BOLD}  MediaOS${NC}"
-echo -e "  Self-hosted media infrastructure"
-echo ""
+# Clear screen
+clear 2>/dev/null || true
 
-# Check Docker
+# Animated banner
+sleep 0.1
+echo ""
+echo -e "${M}  ╔══════════════════════════════════════════════════════════╗${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}                                                          ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}   ${W}${BOLD}███╗   ███╗███████╗██████╗ ██╗ █████╗  ██████╗ ███████╗${NC} ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}   ${W}${BOLD}████╗ ████║██╔════╝██╔══██╗██║██╔══██╗██╔═══██╗██╔════╝${NC} ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}   ${W}${BOLD}██╔████╔██║█████╗  ██║  ██║██║███████║██║   ██║███████╗${NC} ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}   ${W}${BOLD}██║╚██╔╝██║██╔══╝  ██║  ██║██║██╔══██║██║   ██║╚════██║${NC} ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}   ${W}${BOLD}██║ ╚═╝ ██║███████╗██████╔╝██║██║  ██║╚██████╔╝███████║${NC} ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}   ${W}${BOLD}╚═╝     ╚═╝╚══════╝╚═════╝ ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝${NC} ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}                                                          ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}   ${C}Self-hosted media infrastructure${NC}                        ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}   ${DIM}Upload, process, and serve files at scale${NC}               ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ║${NC}                                                          ${M}║${NC}"
+sleep 0.05
+echo -e "${M}  ╚══════════════════════════════════════════════════════════╝${NC}"
+echo ""
+sleep 0.2
+
+# Step indicator
+step() {
+  local num=$1
+  local label=$2
+  echo ""
+  echo -e "  ${M}[$num/6]${NC} ${BOLD}$label${NC}"
+  echo -e "  ${DIM}──────────────────────────────────────${NC}"
+}
+
+# Spinner animation
+spin() {
+  local pid=$1
+  local msg=$2
+  local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  local i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    echo -ne "\r  ${C}${frames[$i]}${NC} $msg"
+    i=$(( (i + 1) % ${#frames[@]} ))
+    sleep 0.1
+  done
+  wait "$pid" 2>/dev/null
+  echo -e "\r  ${G}✓${NC} $msg"
+}
+
+# ─── Step 1: Check Docker ────────────────────────────────────
+step "1" "Checking requirements"
+
 if ! command -v docker &> /dev/null; then
-  echo -e "${RED}  Docker is required but not installed.${NC}"
-  echo "  Install Docker: https://docs.docker.com/get-docker/"
+  echo -e "  ${R}✗${NC} Docker is not installed"
+  echo ""
+  echo -e "  Install Docker: ${W}https://docs.docker.com/get-docker/${NC}"
   exit 1
 fi
+echo -e "  ${G}✓${NC} Docker installed"
 
 if ! docker info &> /dev/null; then
-  echo -e "${RED}  Docker is not running. Please start Docker first.${NC}"
+  echo -e "  ${R}✗${NC} Docker is not running"
+  echo ""
+  echo -e "  Start Docker and try again."
   exit 1
 fi
+echo -e "  ${G}✓${NC} Docker running"
 
-# Check if a port is in use
+# ─── Step 2: Check ports ─────────────────────────────────────
+step "2" "Checking ports"
+
 port_in_use() {
   if command -v lsof &>/dev/null; then
     lsof -i :"$1" -sTCP:LISTEN &>/dev/null 2>&1
@@ -86,7 +133,6 @@ port_in_use() {
   fi
 }
 
-# Find the next available port starting from a given port
 find_free_port() {
   local port=$1
   local max=$((port + 100))
@@ -98,130 +144,115 @@ find_free_port() {
     port=$((port + 1))
   done
   echo "$1"
-  return 1
 }
 
-# Auto-resolve port conflicts
-resolve_port() {
-  local port=$1
-  local name=$2
-  local default=$3
-  if port_in_use "$port"; then
-    local new_port
-    new_port=$(find_free_port "$((port + 1))")
-    echo -e "  ${YELLOW}Port $port ($name) is busy${NC} → using ${BOLD}$new_port${NC}"
-    echo "$new_port"
-  else
-    echo "$port"
-  fi
-}
+if port_in_use "$API_PORT"; then
+  API_PORT=$(find_free_port "$((API_PORT + 1))")
+  echo -e "  ${Y}~${NC} Port 3000 busy → using ${BOLD}$API_PORT${NC}"
+else
+  echo -e "  ${G}✓${NC} API port ${BOLD}$API_PORT${NC}"
+fi
 
-# Resolve all ports (capture just the port number from last line)
-API_PORT_RESULT=$(resolve_port "$API_PORT" "API" 3000)
-API_PORT=$(echo "$API_PORT_RESULT" | tail -1)
+if port_in_use "$DASHBOARD_PORT"; then
+  DASHBOARD_PORT=$(find_free_port "$((DASHBOARD_PORT + 1))")
+  echo -e "  ${Y}~${NC} Port 3001 busy → using ${BOLD}$DASHBOARD_PORT${NC}"
+else
+  echo -e "  ${G}✓${NC} Dashboard port ${BOLD}$DASHBOARD_PORT${NC}"
+fi
 
-DASHBOARD_PORT_RESULT=$(resolve_port "$DASHBOARD_PORT" "Dashboard" 3001)
-DASHBOARD_PORT=$(echo "$DASHBOARD_PORT_RESULT" | tail -1)
+# ─── Step 3: Setup directory ─────────────────────────────────
+step "3" "Setting up project"
 
-PG_PORT_RESULT=$(resolve_port "$PG_PORT" "PostgreSQL" 5432)
-PG_PORT=$(echo "$PG_PORT_RESULT" | tail -1)
-
-REDIS_PORT_RESULT=$(resolve_port "$REDIS_PORT" "Redis" 6379)
-REDIS_PORT=$(echo "$REDIS_PORT_RESULT" | tail -1)
-
-MINIO_PORT_RESULT=$(resolve_port "$MINIO_PORT" "MinIO" 9000)
-MINIO_PORT=$(echo "$MINIO_PORT_RESULT" | tail -1)
-
-MINIO_CONSOLE_PORT_RESULT=$(resolve_port "$MINIO_CONSOLE_PORT" "MinIO Console" 9001)
-MINIO_CONSOLE_PORT=$(echo "$MINIO_CONSOLE_PORT_RESULT" | tail -1)
-
-# Print any conflict messages (lines before the port number)
-for result in "$API_PORT_RESULT" "$DASHBOARD_PORT_RESULT" "$PG_PORT_RESULT" "$REDIS_PORT_RESULT" "$MINIO_PORT_RESULT" "$MINIO_CONSOLE_PORT_RESULT"; do
-  lines=$(echo "$result" | wc -l)
-  if [ "$lines" -gt 1 ]; then
-    echo "$result" | head -n -1
-  fi
-done
-
-echo ""
-echo -e "  ${DIM}Ports:${NC} API=${BOLD}$API_PORT${NC}  Dashboard=${BOLD}$DASHBOARD_PORT${NC}  PG=${BOLD}$PG_PORT${NC}  Redis=${BOLD}$REDIS_PORT${NC}  MinIO=${BOLD}$MINIO_PORT${NC}/${BOLD}$MINIO_CONSOLE_PORT${NC}"
-
-# Create directory
 if [ -d "$DIR" ]; then
-  echo -e "  ${YELLOW}Directory '$DIR' already exists. Using it.${NC}"
+  echo -e "  ${Y}~${NC} Directory ${BOLD}$DIR/${NC} exists, using it"
 else
   mkdir -p "$DIR"
-  echo -e "  Created ${BOLD}$DIR/${NC}"
+  echo -e "  ${G}✓${NC} Created ${BOLD}$DIR/${NC}"
 fi
 cd "$DIR"
 
-# Download files
-echo -e "  Downloading configuration..."
-curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/arrrrniii/MediaOs/main/docker-compose.hub.yml
-curl -fsSL -o .env.example https://raw.githubusercontent.com/arrrrniii/MediaOs/main/.env.example
+(curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/arrrrniii/MediaOs/main/docker-compose.hub.yml) &
+spin $! "Downloading docker-compose.yml"
 
-# Generate .env if it doesn't exist
+(curl -fsSL -o .env.example https://raw.githubusercontent.com/arrrrniii/MediaOs/main/.env.example) &
+spin $! "Downloading .env.example"
+
+# ─── Step 4: Generate secrets ─────────────────────────────────
+step "4" "Generating secrets"
+
 if [ ! -f .env ]; then
   cp .env.example .env
 
-  # Generate secrets
   MASTER_KEY="mv_master_$(openssl rand -hex 24)"
   NEXTAUTH_SECRET="$(openssl rand -hex 32)"
   PG_PASSWORD="$(openssl rand -hex 16)"
   MINIO_PASSWORD="$(openssl rand -hex 16)"
   REDIS_PASSWORD="$(openssl rand -hex 16)"
 
-  # Detect OS for sed compatibility
   if [[ "$OSTYPE" == "darwin"* ]]; then
     SED_CMD="sed -i ''"
   else
     SED_CMD="sed -i"
   fi
 
-  # Replace secrets
   $SED_CMD "s|^MASTER_KEY=.*|MASTER_KEY=$MASTER_KEY|" .env
   $SED_CMD "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=$NEXTAUTH_SECRET|" .env
   $SED_CMD "s|^PG_PASSWORD=.*|PG_PASSWORD=$PG_PASSWORD|" .env
   $SED_CMD "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$MINIO_PASSWORD|" .env
   $SED_CMD "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$REDIS_PASSWORD|" .env
-
-  # Set ports
   $SED_CMD "s|^API_PORT=.*|API_PORT=$API_PORT|" .env
   $SED_CMD "s|^DASHBOARD_PORT=.*|DASHBOARD_PORT=$DASHBOARD_PORT|" .env
-  $SED_CMD "s|^PG_PORT=.*|PG_PORT=$PG_PORT|" .env
-  $SED_CMD "s|^REDIS_PORT=.*|REDIS_PORT=$REDIS_PORT|" .env
-  $SED_CMD "s|^MINIO_CONSOLE_PORT=.*|MINIO_CONSOLE_PORT=$MINIO_CONSOLE_PORT|" .env
-
-  # Set URLs with correct ports
   $SED_CMD "s|^PUBLIC_URL=.*|PUBLIC_URL=http://localhost:$API_PORT|" .env
   $SED_CMD "s|^DASHBOARD_URL=.*|DASHBOARD_URL=http://localhost:$DASHBOARD_PORT|" .env
 
-  # Clean up macOS sed backup files
   rm -f .env''
 
-  echo -e "  Generated ${BOLD}.env${NC} with secure random secrets"
+  echo -e "  ${G}✓${NC} Master key generated"
+  echo -e "  ${G}✓${NC} Database password generated"
+  echo -e "  ${G}✓${NC} Redis password generated"
+  echo -e "  ${G}✓${NC} MinIO password generated"
+  echo -e "  ${G}✓${NC} NextAuth secret generated"
 else
-  echo -e "  ${YELLOW}.env already exists, skipping${NC}"
+  echo -e "  ${Y}~${NC} .env already exists, keeping existing secrets"
 fi
 
-# Pull images
-echo ""
-echo -e "  Pulling Docker images..."
-docker pull arrrrniii/mediaos:worker
-docker pull arrrrniii/mediaos:dashboard
+# ─── Step 5: Pull images ─────────────────────────────────────
+step "5" "Pulling Docker images"
 
-# Start
-echo ""
-echo -e "  Starting MediaOS..."
-docker compose up -d
+(docker pull arrrrniii/mediaos:worker -q > /dev/null 2>&1) &
+spin $! "arrrrniii/mediaos:worker"
 
+(docker pull arrrrniii/mediaos:dashboard -q > /dev/null 2>&1) &
+spin $! "arrrrniii/mediaos:dashboard"
+
+echo -e "  ${G}✓${NC} postgres:16-alpine ${DIM}(pulled on start)${NC}"
+echo -e "  ${G}✓${NC} redis:7-alpine ${DIM}(pulled on start)${NC}"
+echo -e "  ${G}✓${NC} minio/minio:latest ${DIM}(pulled on start)${NC}"
+echo -e "  ${G}✓${NC} darthsim/imgproxy:latest ${DIM}(pulled on start)${NC}"
+
+# ─── Step 6: Start ───────────────────────────────────────────
+step "6" "Starting MediaOS"
+
+(docker compose up -d > /dev/null 2>&1) &
+spin $! "Starting 6 services"
+
+sleep 1
+
+# ─── Done! ────────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}${BOLD}  MediaOS is running!${NC}"
 echo ""
-echo -e "  Dashboard:     ${BOLD}http://localhost:$DASHBOARD_PORT${NC}"
-echo -e "  API:           ${BOLD}http://localhost:$API_PORT${NC}"
-echo -e "  MinIO Console: ${BOLD}http://localhost:$MINIO_CONSOLE_PORT${NC}"
+echo -e "  ${G}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "  ${G}║${NC}                                                      ${G}║${NC}"
+echo -e "  ${G}║${NC}   ${G}${BOLD}MediaOS is running!${NC}                                 ${G}║${NC}"
+echo -e "  ${G}║${NC}                                                      ${G}║${NC}"
+echo -e "  ${G}║${NC}   ${W}Dashboard${NC}  →  ${BOLD}http://localhost:$DASHBOARD_PORT${NC}"
+echo -e "  ${G}║${NC}   ${W}API${NC}        →  ${BOLD}http://localhost:$API_PORT${NC}"
+echo -e "  ${G}║${NC}                                                      ${G}║${NC}"
+echo -e "  ${G}║${NC}   ${DIM}Open the dashboard to create your admin account.${NC}   ${G}║${NC}"
+echo -e "  ${G}║${NC}   ${DIM}Secrets saved in${NC} ${BOLD}$(pwd)/.env${NC}"
+echo -e "  ${G}║${NC}                                                      ${G}║${NC}"
+echo -e "  ${G}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  Open the dashboard to create your admin account."
-echo -e "  Your master key and all secrets are saved in ${BOLD}$(pwd)/.env${NC}"
+echo -e "  ${DIM}Docs:  https://github.com/arrrrniii/MediaOs${NC}"
+echo -e "  ${DIM}Star the repo if you like it!${NC}"
 echo ""
