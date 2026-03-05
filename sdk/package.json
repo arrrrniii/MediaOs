@@ -1,0 +1,56 @@
+{
+  "name": "@mediaos/sdk",
+  "version": "1.0.0",
+  "description": "Official TypeScript SDK for MediaOS — self-hosted media CDN platform. Upload, transform, and serve images, videos, and files.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "jest --verbose --forceExit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mediaos",
+    "cdn",
+    "media",
+    "upload",
+    "image",
+    "video",
+    "file",
+    "storage",
+    "s3",
+    "minio",
+    "resize",
+    "transform",
+    "webp",
+    "sdk"
+  ],
+  "author": "ARN",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arrrrniii/MediaOs"
+  },
+  "homepage": "https://github.com/arrrrniii/MediaOs#readme",
+  "bugs": {
+    "url": "https://github.com/arrrrniii/MediaOs/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0",
+    "jest": "^30.0.0",
+    "ts-jest": "^29.0.0",
+    "@types/jest": "^29.0.0"
+  }
+}
