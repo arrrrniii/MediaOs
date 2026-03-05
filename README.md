@@ -42,7 +42,6 @@ This pulls the pre-built Docker images, generates secure secrets, and starts eve
 
 - **Dashboard:** `http://localhost:3001` (setup wizard creates your admin account)
 - **API:** `http://localhost:3000`
-- **MinIO Console:** `http://localhost:9001`
 
 ### Manual setup (Docker Hub)
 
@@ -92,7 +91,7 @@ This starts 6 services:
 
 Only the API and Dashboard are exposed. All infrastructure services communicate over the internal Docker network.
 
-### 4. Create your admin account
+### Create your admin account
 
 Open the dashboard at `http://localhost:3001`. On first launch, a **setup wizard** will guide you through creating your admin account.
 
@@ -131,7 +130,7 @@ curl -X POST http://localhost:3000/api/v1/projects/PROJECT_ID/keys \
 
 Save the API key from the response — you'll use it for all file operations.
 
-### 5. Upload your first file
+### Upload your first file
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/upload \
@@ -234,9 +233,12 @@ Built-in admin panel (Next.js 15) with:
 
 - Project overview with stats (files, storage, bandwidth)
 - File browser with image thumbnails and preview modal
+- Single file download and bulk ZIP export for backups
 - API key management (create, reveal, revoke)
 - Webhook management and testing
 - Usage analytics with charts
+- Auto-update notifications when a new version is available
+- API documentation page
 - Dark/light theme
 - Responsive design (mobile sidebar)
 
@@ -554,7 +556,6 @@ All configuration is done via environment variables in `.env`:
 | `PG_DATABASE` | `mediaos` | Database name |
 | `PG_USER` | `mediaos` | Database user |
 | `PG_PASSWORD` | — | Database password |
-| `PG_PORT` | `5432` | Database port |
 
 ### MinIO (S3 Storage)
 
@@ -563,7 +564,6 @@ All configuration is done via environment variables in `.env`:
 | `MINIO_ROOT_USER` | `mvadmin` | MinIO access key |
 | `MINIO_ROOT_PASSWORD` | — | MinIO secret key |
 | `MINIO_BUCKET` | `mediaos` | Storage bucket name |
-| `MINIO_CONSOLE_PORT` | `9001` | MinIO web console port |
 
 ### Image Processing
 
@@ -592,7 +592,6 @@ All configuration is done via environment variables in `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `REDIS_PASSWORD` | — | Redis password |
-| `REDIS_PORT` | `6379` | Redis port |
 
 ### Dashboard
 
@@ -651,6 +650,25 @@ node migrations/migrate.js
 ```
 
 Migration files are in `worker/migrations/` as numbered SQL files.
+
+## Updating
+
+MediaOS stores all data in Docker volumes — updates never touch your files or database.
+
+### One-line update
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/update.sh | bash
+```
+
+### Manual update
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The dashboard shows a notification banner when a new version is available on GitHub.
 
 ## Deployment
 
