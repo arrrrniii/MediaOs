@@ -1,6 +1,6 @@
 {
   "name": "@mediaos/sdk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Official TypeScript SDK for MediaOS — self-hosted media CDN platform. Upload, transform, and serve images, videos, and files.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
