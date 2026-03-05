@@ -32,12 +32,21 @@ Upload an image and get back an optimized WebP with instant resize URLs. Upload 
 
 ## Quick Start
 
-### Option A: Docker Hub (fastest)
-
-Pre-built images — no cloning or building required:
+### One-line install (recommended)
 
 ```bash
-# Download the compose file
+curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash
+```
+
+This pulls the pre-built Docker images, generates secure secrets, and starts everything. Done in under a minute.
+
+- **Dashboard:** `http://localhost:3001` (setup wizard creates your admin account)
+- **API:** `http://localhost:3000`
+- **MinIO Console:** `http://localhost:9001`
+
+### Manual setup (Docker Hub)
+
+```bash
 curl -O https://raw.githubusercontent.com/arrrrniii/MediaOs/main/docker-compose.hub.yml
 curl -O https://raw.githubusercontent.com/arrrrniii/MediaOs/main/.env.example
 cp .env.example .env
@@ -45,13 +54,10 @@ cp .env.example .env
 # Generate a master key and add to .env
 node -e "console.log('mv_master_' + require('crypto').randomBytes(24).toString('hex'))"
 
-# Start everything
 docker compose -f docker-compose.hub.yml up -d
 ```
 
-Dashboard: `http://localhost:3001` · API: `http://localhost:3000`
-
-### Option B: Build from source
+### Build from source
 
 ```bash
 git clone https://github.com/arrrrniii/MediaOs.git
