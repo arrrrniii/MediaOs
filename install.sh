@@ -2,7 +2,7 @@
 # MediaOS Installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash
 
-set -e
+set -eo pipefail
 
 # Colors
 R='\033[0;31m'
@@ -199,10 +199,10 @@ step "3" "$TOTAL_STEPS" "Setting up project"
 if [ -d "$DIR" ]; then
   echo -e "  ${Y}~${NC} Directory ${BOLD}$DIR/${NC} exists, using it"
   cd "$DIR"
-  # Stop old containers if running (avoids port conflicts)
-  if [ -f docker-compose.yml ] && docker compose ps -q 2>/dev/null | grep -q .; then
+  # Always stop old containers to avoid port conflicts
+  if [ -f docker-compose.yml ]; then
     echo -e "  ${DIM}  Stopping old containers...${NC}"
-    docker compose down > /dev/null 2>&1 || true
+    docker compose down --remove-orphans > /dev/null 2>&1 || true
     echo -e "  ${G}✓${NC} Old containers stopped"
   fi
 else
@@ -293,19 +293,31 @@ echo -e "  ${DIM}Pulling remaining images and starting services...${NC}"
 echo -e "  ${DIM}This may take a few minutes on first install.${NC}"
 echo ""
 
-docker compose up -d 2>&1 | while IFS= read -r line; do
+COMPOSE_LOG=$(mktemp)
+docker compose up -d > "$COMPOSE_LOG" 2>&1 || true
+
+# Show the output
+while IFS= read -r line; do
   echo -e "  ${DIM}  $line${NC}"
-done
+done < "$COMPOSE_LOG"
+rm -f "$COMPOSE_LOG"
 
-sleep 2
+sleep 3
 
-# Check if all services are actually running
-FAILED=$(docker compose ps --status exited --status restarting -q 2>/dev/null | wc -l | tr -d ' ')
-if [ "$FAILED" != "0" ]; then
+# Check if all expected services are running
+RUNNING=$(docker compose ps --status running -q 2>/dev/null | wc -l | tr -d ' ')
+if [ "$ENABLE_DASHBOARD" = "yes" ]; then
+  EXPECTED=6
+else
+  EXPECTED=5
+fi
+
+if [ "$RUNNING" -lt "$EXPECTED" ]; then
   echo ""
-  echo -e "  ${R}✗${NC} Some services failed to start:"
+  echo -e "  ${R}✗${NC} Some services failed to start ($RUNNING/$EXPECTED running):"
+  echo ""
   docker compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null | while IFS= read -r line; do
-    echo -e "    ${DIM}$line${NC}"
+    echo -e "    $line"
   done
   echo ""
   echo -e "  ${DIM}Fix the issue and run:${NC} ${BOLD}cd $(pwd) && docker compose up -d${NC}"
@@ -314,7 +326,7 @@ if [ "$FAILED" != "0" ]; then
 fi
 
 echo ""
-echo -e "  ${G}✓${NC} All services running"
+echo -e "  ${G}✓${NC} All $EXPECTED services running"
 
 # ─── Done! ────────────────────────────────────────────────────
 echo ""
