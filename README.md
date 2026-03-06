@@ -38,10 +38,19 @@ Upload an image and get back an optimized WebP with instant resize URLs. Upload 
 curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash
 ```
 
-This pulls the pre-built Docker images, generates secure secrets, and starts everything. Done in under a minute.
+This pulls the pre-built Docker images, generates secure secrets, and starts everything. Done in under a minute. The installer will ask if you want the dashboard — it's optional.
 
-- **Dashboard:** `http://localhost:3001` (setup wizard creates your admin account)
 - **API:** `http://localhost:3000`
+- **Dashboard:** `http://localhost:3001` (optional — setup wizard creates your admin account)
+- **Master Key** is displayed at the end — save it for API access
+
+```bash
+# Skip the prompt — API only (no dashboard)
+curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash -s -- --no-dashboard
+
+# Skip the prompt — with dashboard
+curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash -s -- --with-dashboard
+```
 
 ### Manual setup (Docker Hub)
 
@@ -93,19 +102,17 @@ Only the API and Dashboard are exposed. All infrastructure services communicate 
 
 ### API-only mode (no dashboard)
 
-If you only need the API and don't want the dashboard, disable it in `.env`:
+The installer asks if you want the dashboard. You can also toggle it anytime in `.env`:
 
 ```bash
+# Dashboard enabled (default)
+COMPOSE_PROFILES=dashboard
+
+# API-only — no dashboard
 COMPOSE_PROFILES=
 ```
 
-Then restart:
-
-```bash
-docker compose up -d
-```
-
-This runs only the worker API and infrastructure services. You can manage everything via the API using your master key.
+Then restart: `docker compose up -d`
 
 ### Create your admin account
 
