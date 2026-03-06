@@ -151,16 +151,20 @@ echo -e "  ${G}✓${NC} Docker running"
 step "2" "$TOTAL_STEPS" "Checking ports"
 
 port_in_use() {
-  # ss is most reliable on Linux, lsof on macOS
+  # Try multiple methods — at least one must confirm the port is free
   if command -v ss &>/dev/null; then
-    ss -tlnp 2>/dev/null | grep -q ":$1 "
-  elif command -v lsof &>/dev/null; then
-    lsof -iTCP:"$1" -sTCP:LISTEN -P -n &>/dev/null
-  elif command -v netstat &>/dev/null; then
-    netstat -tlnp 2>/dev/null | grep -q ":$1 "
-  else
-    return 1
+    # ss with sport filter is the most reliable on Linux
+    local count
+    count=$(ss -tln "sport = :$1" 2>/dev/null | grep -c LISTEN || true)
+    [ "$count" -gt 0 ] && return 0
   fi
+  if command -v lsof &>/dev/null; then
+    lsof -iTCP:"$1" -sTCP:LISTEN -P -n &>/dev/null && return 0
+  fi
+  if command -v netstat &>/dev/null; then
+    netstat -tlnp 2>/dev/null | grep -q ":$1 " && return 0
+  fi
+  return 1
 }
 
 find_free_port() {
