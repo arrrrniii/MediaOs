@@ -245,7 +245,6 @@ if [ ! -f .env ]; then
   $SED_CMD "s|^PG_PASSWORD=.*|PG_PASSWORD=$PG_PASSWORD|" .env
   $SED_CMD "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$MINIO_PASSWORD|" .env
   $SED_CMD "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$REDIS_PASSWORD|" .env
-  rm -f .env''
 
   echo -e "  ${G}✓${NC} Master key generated"
   echo -e "  ${G}✓${NC} Database password generated"
@@ -272,7 +271,6 @@ if [ "$ENABLE_DASHBOARD" = "yes" ]; then
 else
   grep -q '^COMPOSE_PROFILES' .env && $SED_I "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=|" .env || echo "COMPOSE_PROFILES=" >> .env
 fi
-rm -f .env''
 echo -e "  ${G}✓${NC} Ports configured (API: $API_PORT)"
 
 # ─── Step 5: Pull images ─────────────────────────────────────
