@@ -113,8 +113,14 @@ spin() {
     i=$(( (i + 1) % ${#frames[@]} ))
     sleep 0.1
   done
-  wait "$pid" 2>/dev/null
-  echo -e "\r  ${G}✓${NC} $msg"
+  local exit_code=0
+  wait "$pid" 2>/dev/null || exit_code=$?
+  if [ "$exit_code" -eq 0 ]; then
+    echo -e "\r  ${G}✓${NC} $msg"
+  else
+    echo -e "\r  ${R}✗${NC} $msg ${DIM}(exit code $exit_code)${NC}"
+  fi
+  return $exit_code
 }
 
 TOTAL_STEPS=6
@@ -255,11 +261,11 @@ fi
 step "5" "$TOTAL_STEPS" "Pulling Docker images"
 
 (docker pull arrrrniii/mediaos:worker -q > /dev/null 2>&1) &
-spin $! "arrrrniii/mediaos:worker"
+spin $! "arrrrniii/mediaos:worker" || true
 
 if [ "$ENABLE_DASHBOARD" = "yes" ]; then
   (docker pull arrrrniii/mediaos:dashboard -q > /dev/null 2>&1) &
-  spin $! "arrrrniii/mediaos:dashboard"
+  spin $! "arrrrniii/mediaos:dashboard" || true
 fi
 
 echo -e "  ${G}✓${NC} postgres:16-alpine ${DIM}(pulled on start)${NC}"
@@ -276,36 +282,47 @@ fi
 
 step "6" "$TOTAL_STEPS" "Starting MediaOS"
 
-(docker compose up -d > /dev/null 2>&1) &
-spin $! "Starting $SVC_COUNT services"
+START_OK=true
+(docker compose up -d 2>&1) &
+spin $! "Starting $SVC_COUNT services" || START_OK=false
 
 sleep 1
 
 # ─── Done! ────────────────────────────────────────────────────
 echo ""
 echo ""
+if [ "$START_OK" = true ]; then
 echo -e "  ${G}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "  ${G}║${NC}                                                              ${G}║${NC}"
 echo -e "  ${G}║${NC}   ${G}${BOLD}MediaOS is running!${NC}                                         ${G}║${NC}"
-echo -e "  ${G}║${NC}                                                              ${G}║${NC}"
-echo -e "  ${G}║${NC}   ${W}API${NC}         →  ${BOLD}http://localhost:$API_PORT${NC}"
-if [ "$ENABLE_DASHBOARD" = "yes" ]; then
-echo -e "  ${G}║${NC}   ${W}Dashboard${NC}   →  ${BOLD}http://localhost:$DASHBOARD_PORT${NC}"
-fi
-echo -e "  ${G}║${NC}                                                              ${G}║${NC}"
-echo -e "  ${G}║${NC}   ${W}Master Key${NC}  →  ${BOLD}$MASTER_KEY${NC}"
-echo -e "  ${G}║${NC}   ${DIM}Save this key! You need it for API access.${NC}                 ${G}║${NC}"
-echo -e "  ${G}║${NC}                                                              ${G}║${NC}"
-if [ "$ENABLE_DASHBOARD" = "yes" ]; then
-echo -e "  ${G}║${NC}   ${DIM}Open the dashboard to create your admin account.${NC}           ${G}║${NC}"
 else
-echo -e "  ${G}║${NC}   ${DIM}Create an account via API:${NC}                                  ${G}║${NC}"
-echo -e "  ${G}║${NC}   ${DIM}curl -X POST http://localhost:$API_PORT/api/v1/accounts \\${NC}"
-echo -e "  ${G}║${NC}   ${DIM}  -H \"X-API-Key: \$MASTER_KEY\" -H \"Content-Type: ...\"${NC}       ${G}║${NC}"
+echo -e "  ${Y}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "  ${Y}║${NC}                                                              ${Y}║${NC}"
+echo -e "  ${Y}║${NC}   ${Y}${BOLD}MediaOS is starting...${NC}                                      ${Y}║${NC}"
+echo -e "  ${Y}║${NC}   ${DIM}Some services may still be pulling images. Run:${NC}             ${Y}║${NC}"
+echo -e "  ${Y}║${NC}   ${BOLD}cd $(pwd) && docker compose up -d${NC}"
+echo -e "  ${Y}║${NC}   ${DIM}to check status: ${NC}${BOLD}docker compose ps${NC}"
 fi
-echo -e "  ${G}║${NC}   ${DIM}All secrets saved in${NC} ${BOLD}$(pwd)/.env${NC}"
-echo -e "  ${G}║${NC}                                                              ${G}║${NC}"
-echo -e "  ${G}╚══════════════════════════════════════════════════════════════╝${NC}"
+BC=${G}; [ "$START_OK" = false ] && BC=${Y}
+echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
+echo -e "  ${BC}║${NC}   ${W}API${NC}         →  ${BOLD}http://localhost:$API_PORT${NC}"
+if [ "$ENABLE_DASHBOARD" = "yes" ]; then
+echo -e "  ${BC}║${NC}   ${W}Dashboard${NC}   →  ${BOLD}http://localhost:$DASHBOARD_PORT${NC}"
+fi
+echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
+echo -e "  ${BC}║${NC}   ${W}Master Key${NC}  →  ${BOLD}$MASTER_KEY${NC}"
+echo -e "  ${BC}║${NC}   ${DIM}Save this key! You need it for API access.${NC}                 ${BC}║${NC}"
+echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
+if [ "$ENABLE_DASHBOARD" = "yes" ]; then
+echo -e "  ${BC}║${NC}   ${DIM}Open the dashboard to create your admin account.${NC}           ${BC}║${NC}"
+else
+echo -e "  ${BC}║${NC}   ${DIM}Create an account via API:${NC}                                  ${BC}║${NC}"
+echo -e "  ${BC}║${NC}   ${DIM}curl -X POST http://localhost:$API_PORT/api/v1/accounts \\${NC}"
+echo -e "  ${BC}║${NC}   ${DIM}  -H \"X-API-Key: \$MASTER_KEY\" -H \"Content-Type: ...\"${NC}       ${BC}║${NC}"
+fi
+echo -e "  ${BC}║${NC}   ${DIM}All secrets saved in${NC} ${BOLD}$(pwd)/.env${NC}"
+echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
+echo -e "  ${BC}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  ${DIM}Docs:  https://github.com/arrrrniii/MediaOs${NC}"
 echo -e "  ${DIM}Star the repo if you like it!${NC}"
