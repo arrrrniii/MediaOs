@@ -210,13 +210,17 @@ if [ -d "$DIR" ]; then
   # Always stop old containers to avoid port conflicts
   if [ -f docker-compose.yml ]; then
     echo -e "  ${DIM}  Stopping old containers...${NC}"
-    docker compose down --remove-orphans > /dev/null 2>&1 || true
-    echo -e "  ${G}✓${NC} Old containers stopped"
+    docker compose down -v --remove-orphans > /dev/null 2>&1 || true
+    echo -e "  ${G}✓${NC} Old containers and volumes removed"
   fi
 else
   mkdir -p "$DIR"
   echo -e "  ${G}✓${NC} Created ${BOLD}$DIR/${NC}"
   cd "$DIR"
+  # Remove orphaned volumes from previous install (prevents Postgres password mismatch)
+  for vol in mediaos_pg_data mediaos_minio_data mediaos_redis_data; do
+    docker volume rm "$vol" > /dev/null 2>&1 || true
+  done
 fi
 
 (curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/arrrrniii/MediaOs/main/docker-compose.hub.yml) &
