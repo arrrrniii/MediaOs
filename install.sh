@@ -151,10 +151,11 @@ echo -e "  ${G}✓${NC} Docker running"
 step "2" "$TOTAL_STEPS" "Checking ports"
 
 port_in_use() {
-  if command -v lsof &>/dev/null; then
-    lsof -i :"$1" -sTCP:LISTEN &>/dev/null 2>&1
-  elif command -v ss &>/dev/null; then
+  # ss is most reliable on Linux, lsof on macOS
+  if command -v ss &>/dev/null; then
     ss -tlnp 2>/dev/null | grep -q ":$1 "
+  elif command -v lsof &>/dev/null; then
+    lsof -iTCP:"$1" -sTCP:LISTEN -P -n &>/dev/null
   elif command -v netstat &>/dev/null; then
     netstat -tlnp 2>/dev/null | grep -q ":$1 "
   else
