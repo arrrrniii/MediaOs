@@ -1,5 +1,5 @@
 #!/bin/bash
-# MediaOS Installer
+# MediaOS Installer v1.1.1
 # Usage: curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/install.sh | bash
 
 set -eo pipefail
@@ -20,6 +20,14 @@ API_PORT=3000
 DASHBOARD_PORT=3001
 ENABLE_DASHBOARD="ask"
 DIR="mediaos"
+
+# Portable in-place sed (avoids sed -i quoting issues across macOS/Linux)
+sedi() {
+  local expr="$1"
+  local file="$2"
+  local tmp="${file}.sedtmp"
+  sed "$expr" "$file" > "$tmp" && mv "$tmp" "$file"
+}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -124,9 +132,6 @@ spin() {
 }
 
 TOTAL_STEPS=6
-if [ "$ENABLE_DASHBOARD" = "no" ]; then
-  TOTAL_STEPS=6
-fi
 
 # ─── Step 1: Check Docker ────────────────────────────────────
 step "1" "$TOTAL_STEPS" "Checking requirements"
@@ -151,9 +156,7 @@ echo -e "  ${G}✓${NC} Docker running"
 step "2" "$TOTAL_STEPS" "Checking ports"
 
 port_in_use() {
-  # Try multiple methods — at least one must confirm the port is free
   if command -v ss &>/dev/null; then
-    # ss with sport filter is the most reliable on Linux
     local count
     count=$(ss -tln "sport = :$1" 2>/dev/null | grep -c LISTEN || true)
     [ "$count" -gt 0 ] && return 0
@@ -234,17 +237,11 @@ if [ ! -f .env ]; then
   MINIO_PASSWORD="$(openssl rand -hex 16)"
   REDIS_PASSWORD="$(openssl rand -hex 16)"
 
-  if [[ "$OSTYPE" == "darwin"* ]]; then
-    SED_CMD="sed -i ''"
-  else
-    SED_CMD="sed -i"
-  fi
-
-  $SED_CMD "s|^MASTER_KEY=.*|MASTER_KEY=$MASTER_KEY|" .env
-  $SED_CMD "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=$NEXTAUTH_SECRET|" .env
-  $SED_CMD "s|^PG_PASSWORD=.*|PG_PASSWORD=$PG_PASSWORD|" .env
-  $SED_CMD "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$MINIO_PASSWORD|" .env
-  $SED_CMD "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$REDIS_PASSWORD|" .env
+  sedi "s|^MASTER_KEY=.*|MASTER_KEY=$MASTER_KEY|" .env
+  sedi "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=$NEXTAUTH_SECRET|" .env
+  sedi "s|^PG_PASSWORD=.*|PG_PASSWORD=$PG_PASSWORD|" .env
+  sedi "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$MINIO_PASSWORD|" .env
+  sedi "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$REDIS_PASSWORD|" .env
 
   echo -e "  ${G}✓${NC} Master key generated"
   echo -e "  ${G}✓${NC} Database password generated"
@@ -257,19 +254,14 @@ else
 fi
 
 # Always update ports and profiles (handles re-runs where ports changed)
-if [[ "$OSTYPE" == "darwin"* ]]; then
-  SED_I="sed -i ''"
-else
-  SED_I="sed -i"
-fi
-$SED_I "s|^API_PORT=.*|API_PORT=$API_PORT|" .env
-$SED_I "s|^PUBLIC_URL=.*|PUBLIC_URL=http://localhost:$API_PORT|" .env
-$SED_I "s|^DASHBOARD_PORT=.*|DASHBOARD_PORT=$DASHBOARD_PORT|" .env
-$SED_I "s|^DASHBOARD_URL=.*|DASHBOARD_URL=http://localhost:$DASHBOARD_PORT|" .env
+sedi "s|^API_PORT=.*|API_PORT=$API_PORT|" .env
+sedi "s|^PUBLIC_URL=.*|PUBLIC_URL=http://localhost:$API_PORT|" .env
+sedi "s|^DASHBOARD_PORT=.*|DASHBOARD_PORT=$DASHBOARD_PORT|" .env
+sedi "s|^DASHBOARD_URL=.*|DASHBOARD_URL=http://localhost:$DASHBOARD_PORT|" .env
 if [ "$ENABLE_DASHBOARD" = "yes" ]; then
-  grep -q '^COMPOSE_PROFILES' .env && $SED_I "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=dashboard|" .env || echo "COMPOSE_PROFILES=dashboard" >> .env
+  sedi "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=dashboard|" .env
 else
-  grep -q '^COMPOSE_PROFILES' .env && $SED_I "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=|" .env || echo "COMPOSE_PROFILES=" >> .env
+  sedi "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=|" .env
 fi
 echo -e "  ${G}✓${NC} Ports configured (API: $API_PORT)"
 
