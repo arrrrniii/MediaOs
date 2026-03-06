@@ -19,6 +19,7 @@ NC='\033[0m'
 API_PORT=3000
 DASHBOARD_PORT=3001
 ENABLE_DASHBOARD="ask"
+PUBLIC_DOMAIN=""
 DIR="mediaos"
 
 # Portable in-place sed (avoids sed -i quoting issues across macOS/Linux)
@@ -34,6 +35,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --api-port) API_PORT="$2"; shift 2 ;;
     --dashboard-port) DASHBOARD_PORT="$2"; shift 2 ;;
+    --domain) PUBLIC_DOMAIN="$2"; shift 2 ;;
     --no-dashboard) ENABLE_DASHBOARD="no"; shift ;;
     --with-dashboard) ENABLE_DASHBOARD="yes"; shift ;;
     --help|-h)
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
       echo "Options:"
       echo "  --api-port PORT        API port (default: 3000)"
       echo "  --dashboard-port PORT  Dashboard port (default: 3001)"
+      echo "  --domain DOMAIN        Public domain (e.g. cdn.example.com)"
       echo "  --no-dashboard         Install without the admin dashboard"
       echo "  --with-dashboard       Install with the admin dashboard (skip prompt)"
       echo "  -h, --help             Show this help"
@@ -98,6 +101,25 @@ if [ "$ENABLE_DASHBOARD" = "ask" ]; then
     *) ENABLE_DASHBOARD="yes" ;;
   esac
   echo ""
+fi
+
+# Ask for public domain if not specified via flag
+if [ -z "$PUBLIC_DOMAIN" ]; then
+  echo -e "  ${W}Public domain?${NC} ${DIM}(e.g. cdn.example.com — leave blank for localhost)${NC}"
+  echo -ne "  ${BOLD}Domain:${NC} "
+  read -r PUBLIC_DOMAIN < /dev/tty 2>/dev/null || PUBLIC_DOMAIN=""
+  echo ""
+fi
+
+# Build PUBLIC_URL from domain or fallback to localhost
+if [ -n "$PUBLIC_DOMAIN" ]; then
+  # Strip protocol if user included it
+  PUBLIC_DOMAIN="${PUBLIC_DOMAIN#http://}"
+  PUBLIC_DOMAIN="${PUBLIC_DOMAIN#https://}"
+  PUBLIC_DOMAIN="${PUBLIC_DOMAIN%/}"
+  PUBLIC_URL="https://$PUBLIC_DOMAIN"
+else
+  PUBLIC_URL="http://localhost:$API_PORT"
 fi
 
 # Step indicator
@@ -259,7 +281,7 @@ fi
 
 # Always update ports and profiles (handles re-runs where ports changed)
 sedi "s|^API_PORT=.*|API_PORT=$API_PORT|" .env
-sedi "s|^PUBLIC_URL=.*|PUBLIC_URL=http://localhost:$API_PORT|" .env
+sedi "s|^PUBLIC_URL=.*|PUBLIC_URL=$PUBLIC_URL|" .env
 sedi "s|^DASHBOARD_PORT=.*|DASHBOARD_PORT=$DASHBOARD_PORT|" .env
 sedi "s|^DASHBOARD_URL=.*|DASHBOARD_URL=http://localhost:$DASHBOARD_PORT|" .env
 if [ "$ENABLE_DASHBOARD" = "yes" ]; then
@@ -390,9 +412,14 @@ echo -e "  ${G}║${NC}                                                         
 echo -e "  ${G}║${NC}   ${G}${BOLD}MediaOS is running!${NC}                                         ${G}║${NC}"
 BC=${G}
 echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
-echo -e "  ${BC}║${NC}   ${W}API${NC}         →  ${BOLD}http://localhost:$API_PORT${NC}"
+echo -e "  ${BC}║${NC}   ${W}API${NC}         →  ${BOLD}$PUBLIC_URL${NC}"
 if [ "$ENABLE_DASHBOARD" = "yes" ]; then
-echo -e "  ${BC}║${NC}   ${W}Dashboard${NC}   →  ${BOLD}http://localhost:$DASHBOARD_PORT${NC}"
+  if [ -n "$PUBLIC_DOMAIN" ]; then
+    DASHBOARD_DISPLAY="https://$PUBLIC_DOMAIN:$DASHBOARD_PORT"
+  else
+    DASHBOARD_DISPLAY="http://localhost:$DASHBOARD_PORT"
+  fi
+echo -e "  ${BC}║${NC}   ${W}Dashboard${NC}   →  ${BOLD}$DASHBOARD_DISPLAY${NC}"
 fi
 echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
 echo -e "  ${BC}║${NC}   ${W}Master Key${NC}  →  ${BOLD}$MASTER_KEY${NC}"
