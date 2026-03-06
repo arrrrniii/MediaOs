@@ -102,6 +102,10 @@ services:
       # App
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
       MASTER_KEY: ${MASTER_KEY:-}
+      # Admin account (first boot only)
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       # Processing
       WEBP_QUALITY: ${WEBP_QUALITY:-80}
       MAX_WIDTH: ${MAX_WIDTH:-1600}

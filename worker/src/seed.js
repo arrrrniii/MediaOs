@@ -22,7 +22,7 @@ async function seedAdmin() {
   await query(
     `INSERT INTO accounts (name, email, password_hash, plan, status)
      VALUES ($1, $2, $3, $4, $5)`,
-    ['Admin', config.adminEmail, hash, 'free', 'active']
+    [config.adminName, config.adminEmail, hash, 'free', 'active']
   );
 
   console.log('');

@@ -28,6 +28,7 @@ module.exports = {
   masterKey: process.env.MASTER_KEY || '',
 
   // Initial admin (created on first boot if no accounts exist)
+  adminName: process.env.ADMIN_NAME || 'Admin',
   adminEmail: process.env.ADMIN_EMAIL || '',
   adminPassword: process.env.ADMIN_PASSWORD || '',
 

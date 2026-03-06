@@ -131,7 +131,7 @@ spin() {
   return $exit_code
 }
 
-TOTAL_STEPS=6
+TOTAL_STEPS=7
 
 # ─── Step 1: Check Docker ────────────────────────────────────
 step "1" "$TOTAL_STEPS" "Checking requirements"
@@ -265,8 +265,57 @@ else
 fi
 echo -e "  ${G}✓${NC} Ports configured (API: $API_PORT)"
 
-# ─── Step 5: Pull images ─────────────────────────────────────
-step "5" "$TOTAL_STEPS" "Pulling Docker images"
+# ─── Step 5: Create admin account ─────────────────────────────
+step "5" "$TOTAL_STEPS" "Admin account"
+
+echo -e "  ${W}Create your admin account${NC}"
+echo ""
+
+echo -ne "  ${BOLD}Name:${NC} "
+read -r ADMIN_NAME < /dev/tty 2>/dev/null || ADMIN_NAME="Admin"
+ADMIN_NAME="${ADMIN_NAME:-Admin}"
+
+echo -ne "  ${BOLD}Email:${NC} "
+read -r ADMIN_EMAIL < /dev/tty 2>/dev/null || ADMIN_EMAIL=""
+
+while [ -z "$ADMIN_EMAIL" ]; do
+  echo -e "  ${R}Email is required${NC}"
+  echo -ne "  ${BOLD}Email:${NC} "
+  read -r ADMIN_EMAIL < /dev/tty 2>/dev/null || ADMIN_EMAIL=""
+done
+
+echo ""
+echo -e "  ${BOLD}Password:${NC}"
+echo -e "    ${DIM}1)${NC} Auto-generate secure password"
+echo -e "    ${DIM}2)${NC} Enter manually"
+echo -ne "  ${BOLD}[1/2]:${NC} "
+read -r PASS_CHOICE < /dev/tty 2>/dev/null || PASS_CHOICE="1"
+
+if [ "$PASS_CHOICE" = "2" ]; then
+  echo -ne "  ${BOLD}Password (min 8 chars):${NC} "
+  read -rs ADMIN_PASSWORD < /dev/tty 2>/dev/null || ADMIN_PASSWORD=""
+  echo ""
+  while [ ${#ADMIN_PASSWORD} -lt 8 ]; do
+    echo -e "  ${R}Password must be at least 8 characters${NC}"
+    echo -ne "  ${BOLD}Password (min 8 chars):${NC} "
+    read -rs ADMIN_PASSWORD < /dev/tty 2>/dev/null || ADMIN_PASSWORD=""
+    echo ""
+  done
+  PASS_DISPLAY="${DIM}(hidden)${NC}"
+else
+  ADMIN_PASSWORD="$(openssl rand -base64 16 | tr -d '=/+' | head -c 20)"
+  PASS_DISPLAY="${BOLD}$ADMIN_PASSWORD${NC}"
+fi
+
+grep -q '^ADMIN_NAME=' .env && sedi "s|^ADMIN_NAME=.*|ADMIN_NAME=$ADMIN_NAME|" .env || echo "ADMIN_NAME=$ADMIN_NAME" >> .env
+grep -q '^ADMIN_EMAIL=' .env && sedi "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=$ADMIN_EMAIL|" .env || echo "ADMIN_EMAIL=$ADMIN_EMAIL" >> .env
+grep -q '^ADMIN_PASSWORD=' .env && sedi "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$ADMIN_PASSWORD|" .env || echo "ADMIN_PASSWORD=$ADMIN_PASSWORD" >> .env
+
+echo ""
+echo -e "  ${G}✓${NC} Account: ${BOLD}$ADMIN_NAME${NC} <$ADMIN_EMAIL>"
+
+# ─── Step 6: Pull images ─────────────────────────────────────
+step "6" "$TOTAL_STEPS" "Pulling Docker images"
 
 (docker pull arrrrniii/mediaos:worker -q > /dev/null 2>&1) &
 spin $! "arrrrniii/mediaos:worker" || true
@@ -281,14 +330,14 @@ echo -e "  ${G}✓${NC} redis:7-alpine ${DIM}(pulled on start)${NC}"
 echo -e "  ${G}✓${NC} minio/minio:latest ${DIM}(pulled on start)${NC}"
 echo -e "  ${G}✓${NC} darthsim/imgproxy:latest ${DIM}(pulled on start)${NC}"
 
-# ─── Step 6: Start ───────────────────────────────────────────
+# ─── Step 7: Start ───────────────────────────────────────────
 if [ "$ENABLE_DASHBOARD" = "yes" ]; then
   SVC_COUNT=6
 else
   SVC_COUNT=5
 fi
 
-step "6" "$TOTAL_STEPS" "Starting MediaOS"
+step "7" "$TOTAL_STEPS" "Starting MediaOS"
 
 echo -e "  ${DIM}Pulling remaining images and starting services...${NC}"
 echo -e "  ${DIM}This may take a few minutes on first install.${NC}"
@@ -343,14 +392,16 @@ echo -e "  ${BC}║${NC}   ${W}Dashboard${NC}   →  ${BOLD}http://localhost:$DA
 fi
 echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
 echo -e "  ${BC}║${NC}   ${W}Master Key${NC}  →  ${BOLD}$MASTER_KEY${NC}"
-echo -e "  ${BC}║${NC}   ${DIM}Save this key! You need it for API access.${NC}                 ${BC}║${NC}"
+echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
+echo -e "  ${BC}║${NC}   ${W}Admin${NC}       →  ${BOLD}$ADMIN_EMAIL${NC}"
+echo -e "  ${BC}║${NC}   ${W}Password${NC}    →  $PASS_DISPLAY"
 echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
 if [ "$ENABLE_DASHBOARD" = "yes" ]; then
-echo -e "  ${BC}║${NC}   ${DIM}Open the dashboard to create your admin account.${NC}           ${BC}║${NC}"
+echo -e "  ${BC}║${NC}   ${DIM}Open the dashboard to sign in.${NC}                              ${BC}║${NC}"
 else
-echo -e "  ${BC}║${NC}   ${DIM}Use the Master Key above for API access.${NC}                    ${BC}║${NC}"
 echo -e "  ${BC}║${NC}   ${DIM}Docs: github.com/arrrrniii/MediaOs#api-reference${NC}            ${BC}║${NC}"
 fi
+echo -e "  ${BC}║${NC}   ${DIM}Save these credentials! Shown only once.${NC}                    ${BC}║${NC}"
 echo -e "  ${BC}║${NC}   ${DIM}All secrets saved in${NC} ${BOLD}$(pwd)/.env${NC}"
 echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
 echo -e "  ${BC}╚══════════════════════════════════════════════════════════════╝${NC}"

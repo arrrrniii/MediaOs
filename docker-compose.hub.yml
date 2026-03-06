@@ -100,6 +100,9 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-changeme_redis_password}@redis:6379
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
       MASTER_KEY: ${MASTER_KEY:-}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       WEBP_QUALITY: ${WEBP_QUALITY:-80}
       MAX_WIDTH: ${MAX_WIDTH:-1600}
       MAX_HEIGHT: ${MAX_HEIGHT:-1600}
