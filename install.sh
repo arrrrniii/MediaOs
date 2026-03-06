@@ -245,18 +245,6 @@ if [ ! -f .env ]; then
   $SED_CMD "s|^PG_PASSWORD=.*|PG_PASSWORD=$PG_PASSWORD|" .env
   $SED_CMD "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$MINIO_PASSWORD|" .env
   $SED_CMD "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$REDIS_PASSWORD|" .env
-  $SED_CMD "s|^API_PORT=.*|API_PORT=$API_PORT|" .env
-  $SED_CMD "s|^DASHBOARD_PORT=.*|DASHBOARD_PORT=$DASHBOARD_PORT|" .env
-  $SED_CMD "s|^PUBLIC_URL=.*|PUBLIC_URL=http://localhost:$API_PORT|" .env
-  $SED_CMD "s|^DASHBOARD_URL=.*|DASHBOARD_URL=http://localhost:$DASHBOARD_PORT|" .env
-
-  # Set dashboard profile
-  if [ "$ENABLE_DASHBOARD" = "yes" ]; then
-    grep -q '^COMPOSE_PROFILES' .env && $SED_CMD "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=dashboard|" .env || echo "COMPOSE_PROFILES=dashboard" >> .env
-  else
-    grep -q '^COMPOSE_PROFILES' .env && $SED_CMD "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=|" .env || echo "COMPOSE_PROFILES=" >> .env
-  fi
-
   rm -f .env''
 
   echo -e "  ${G}✓${NC} Master key generated"
@@ -268,6 +256,24 @@ else
   echo -e "  ${Y}~${NC} .env already exists, keeping existing secrets"
   MASTER_KEY=$(grep '^MASTER_KEY=' .env | cut -d= -f2)
 fi
+
+# Always update ports and profiles (handles re-runs where ports changed)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  SED_I="sed -i ''"
+else
+  SED_I="sed -i"
+fi
+$SED_I "s|^API_PORT=.*|API_PORT=$API_PORT|" .env
+$SED_I "s|^PUBLIC_URL=.*|PUBLIC_URL=http://localhost:$API_PORT|" .env
+$SED_I "s|^DASHBOARD_PORT=.*|DASHBOARD_PORT=$DASHBOARD_PORT|" .env
+$SED_I "s|^DASHBOARD_URL=.*|DASHBOARD_URL=http://localhost:$DASHBOARD_PORT|" .env
+if [ "$ENABLE_DASHBOARD" = "yes" ]; then
+  grep -q '^COMPOSE_PROFILES' .env && $SED_I "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=dashboard|" .env || echo "COMPOSE_PROFILES=dashboard" >> .env
+else
+  grep -q '^COMPOSE_PROFILES' .env && $SED_I "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=|" .env || echo "COMPOSE_PROFILES=" >> .env
+fi
+rm -f .env''
+echo -e "  ${G}✓${NC} Ports configured (API: $API_PORT)"
 
 # ─── Step 5: Pull images ─────────────────────────────────────
 step "5" "$TOTAL_STEPS" "Pulling Docker images"
