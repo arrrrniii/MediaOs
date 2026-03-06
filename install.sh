@@ -282,28 +282,33 @@ fi
 
 step "6" "$TOTAL_STEPS" "Starting MediaOS"
 
-START_OK=true
-(docker compose up -d 2>&1) &
-spin $! "Starting $SVC_COUNT services" || START_OK=false
+echo -e "  ${DIM}Pulling remaining images and starting services...${NC}"
+echo -e "  ${DIM}This may take a few minutes on first install.${NC}"
+echo ""
 
-sleep 1
+if ! docker compose up -d 2>&1 | while IFS= read -r line; do
+  echo -e "  ${DIM}  $line${NC}"
+done; then
+  echo ""
+  echo -e "  ${R}${BOLD}Failed to start MediaOS.${NC}"
+  echo -e "  ${DIM}Check the error above and try:${NC} ${BOLD}docker compose up -d${NC}"
+  echo ""
+  echo -e "  ${DIM}Your secrets are saved in${NC} ${BOLD}$(pwd)/.env${NC}"
+  exit 1
+fi
+
+echo ""
+echo -e "  ${G}✓${NC} All services started"
+
+sleep 2
 
 # ─── Done! ────────────────────────────────────────────────────
 echo ""
 echo ""
-if [ "$START_OK" = true ]; then
 echo -e "  ${G}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "  ${G}║${NC}                                                              ${G}║${NC}"
 echo -e "  ${G}║${NC}   ${G}${BOLD}MediaOS is running!${NC}                                         ${G}║${NC}"
-else
-echo -e "  ${Y}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "  ${Y}║${NC}                                                              ${Y}║${NC}"
-echo -e "  ${Y}║${NC}   ${Y}${BOLD}MediaOS is starting...${NC}                                      ${Y}║${NC}"
-echo -e "  ${Y}║${NC}   ${DIM}Some services may still be pulling images. Run:${NC}             ${Y}║${NC}"
-echo -e "  ${Y}║${NC}   ${BOLD}cd $(pwd) && docker compose up -d${NC}"
-echo -e "  ${Y}║${NC}   ${DIM}to check status: ${NC}${BOLD}docker compose ps${NC}"
-fi
-BC=${G}; [ "$START_OK" = false ] && BC=${Y}
+BC=${G}
 echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
 echo -e "  ${BC}║${NC}   ${W}API${NC}         →  ${BOLD}http://localhost:$API_PORT${NC}"
 if [ "$ENABLE_DASHBOARD" = "yes" ]; then
