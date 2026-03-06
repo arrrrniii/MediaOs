@@ -198,11 +198,18 @@ step "3" "$TOTAL_STEPS" "Setting up project"
 
 if [ -d "$DIR" ]; then
   echo -e "  ${Y}~${NC} Directory ${BOLD}$DIR/${NC} exists, using it"
+  cd "$DIR"
+  # Stop old containers if running (avoids port conflicts)
+  if [ -f docker-compose.yml ] && docker compose ps -q 2>/dev/null | grep -q .; then
+    echo -e "  ${DIM}  Stopping old containers...${NC}"
+    docker compose down > /dev/null 2>&1 || true
+    echo -e "  ${G}✓${NC} Old containers stopped"
+  fi
 else
   mkdir -p "$DIR"
   echo -e "  ${G}✓${NC} Created ${BOLD}$DIR/${NC}"
+  cd "$DIR"
 fi
-cd "$DIR"
 
 (curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/arrrrniii/MediaOs/main/docker-compose.hub.yml) &
 spin $! "Downloading docker-compose.yml"
@@ -286,21 +293,28 @@ echo -e "  ${DIM}Pulling remaining images and starting services...${NC}"
 echo -e "  ${DIM}This may take a few minutes on first install.${NC}"
 echo ""
 
-if ! docker compose up -d 2>&1 | while IFS= read -r line; do
+docker compose up -d 2>&1 | while IFS= read -r line; do
   echo -e "  ${DIM}  $line${NC}"
-done; then
+done
+
+sleep 2
+
+# Check if all services are actually running
+FAILED=$(docker compose ps --status exited --status restarting -q 2>/dev/null | wc -l | tr -d ' ')
+if [ "$FAILED" != "0" ]; then
   echo ""
-  echo -e "  ${R}${BOLD}Failed to start MediaOS.${NC}"
-  echo -e "  ${DIM}Check the error above and try:${NC} ${BOLD}docker compose up -d${NC}"
+  echo -e "  ${R}✗${NC} Some services failed to start:"
+  docker compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null | while IFS= read -r line; do
+    echo -e "    ${DIM}$line${NC}"
+  done
   echo ""
+  echo -e "  ${DIM}Fix the issue and run:${NC} ${BOLD}cd $(pwd) && docker compose up -d${NC}"
   echo -e "  ${DIM}Your secrets are saved in${NC} ${BOLD}$(pwd)/.env${NC}"
   exit 1
 fi
 
 echo ""
-echo -e "  ${G}✓${NC} All services started"
-
-sleep 2
+echo -e "  ${G}✓${NC} All services running"
 
 # ─── Done! ────────────────────────────────────────────────────
 echo ""
@@ -321,9 +335,8 @@ echo -e "  ${BC}║${NC}                                                        
 if [ "$ENABLE_DASHBOARD" = "yes" ]; then
 echo -e "  ${BC}║${NC}   ${DIM}Open the dashboard to create your admin account.${NC}           ${BC}║${NC}"
 else
-echo -e "  ${BC}║${NC}   ${DIM}Create an account via API:${NC}                                  ${BC}║${NC}"
-echo -e "  ${BC}║${NC}   ${DIM}curl -X POST http://localhost:$API_PORT/api/v1/accounts \\${NC}"
-echo -e "  ${BC}║${NC}   ${DIM}  -H \"X-API-Key: \$MASTER_KEY\" -H \"Content-Type: ...\"${NC}       ${BC}║${NC}"
+echo -e "  ${BC}║${NC}   ${DIM}Use the Master Key above for API access.${NC}                    ${BC}║${NC}"
+echo -e "  ${BC}║${NC}   ${DIM}Docs: github.com/arrrrniii/MediaOs#api-reference${NC}            ${BC}║${NC}"
 fi
 echo -e "  ${BC}║${NC}   ${DIM}All secrets saved in${NC} ${BOLD}$(pwd)/.env${NC}"
 echo -e "  ${BC}║${NC}                                                              ${BC}║${NC}"
