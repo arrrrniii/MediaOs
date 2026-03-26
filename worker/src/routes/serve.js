@@ -1,8 +1,7 @@
 const { Router } = require('express');
-const crypto = require('crypto');
 const { query } = require('../db');
 const { getObject, getPartialObject, statObject } = require('../minio');
-const { constantTimeCompare } = require('../utils/crypto');
+const { validateOriginal, validateTransform } = require('../services/signedUrl');
 const { trackDownload, trackTransform, trackBandwidth } = require('../services/usageService');
 const config = require('../config');
 
@@ -42,25 +41,11 @@ router.get('/f/:projectId/*', async (req, res, next) => {
         });
       }
 
-      // Validate expiry
-      if (parseInt(expires) < Math.floor(Date.now() / 1000)) {
+      if (!validateOriginal(file.signing_secret, storageKey, token, expires)) {
+        const isExpired = parseInt(expires) < Math.floor(Date.now() / 1000);
         return res.status(403).json({
-          error: 'Signed URL has expired',
-          code: 'URL_EXPIRED',
-        });
-      }
-
-      // Validate signature
-      const payload = `${storageKey}:${expires}`;
-      const expected = crypto
-        .createHmac('sha256', file.signing_secret)
-        .update(payload)
-        .digest('hex');
-
-      if (!constantTimeCompare(token, expected)) {
-        return res.status(403).json({
-          error: 'Invalid signature',
-          code: 'INVALID_SIGNATURE',
+          error: isExpired ? 'Signed URL has expired' : 'Invalid signature',
+          code: isExpired ? 'URL_EXPIRED' : 'INVALID_SIGNATURE',
         });
       }
     }
@@ -89,11 +74,19 @@ router.get('/f/:projectId/*', async (req, res, next) => {
     }
 
     // Set headers
+    const etag = stat.etag;
     res.set('Content-Type', file.mime_type);
     res.set('Cache-Control', 'public, max-age=31536000, immutable');
-    res.set('ETag', stat.etag);
+    res.set('CDN-Cache-Control', 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400');
+    res.set('Surrogate-Control', 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400');
+    res.set('ETag', etag);
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Accept-Ranges', 'bytes');
+
+    // 304 Not Modified
+    if (req.headers['if-none-match'] && req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
 
     // Handle Range requests (for video seeking)
     const range = req.headers.range;
@@ -166,23 +159,12 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
         });
       }
 
-      if (parseInt(expires) < Math.floor(Date.now() / 1000)) {
+      const format = req.query.format || 'webp';
+      if (!validateTransform(fileRows[0].signing_secret, storageKey, { mode: type, width, height, format }, token, expires)) {
+        const isExpired = parseInt(expires) < Math.floor(Date.now() / 1000);
         return res.status(403).json({
-          error: 'Signed URL has expired',
-          code: 'URL_EXPIRED',
-        });
-      }
-
-      const payload = `${storageKey}:${expires}`;
-      const expected = crypto
-        .createHmac('sha256', fileRows[0].signing_secret)
-        .update(payload)
-        .digest('hex');
-
-      if (!constantTimeCompare(token, expected)) {
-        return res.status(403).json({
-          error: 'Invalid signature',
-          code: 'INVALID_SIGNATURE',
+          error: isExpired ? 'Signed URL has expired' : 'Invalid signature',
+          code: isExpired ? 'URL_EXPIRED' : 'INVALID_SIGNATURE',
         });
       }
     }
@@ -209,6 +191,8 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
     // Forward headers
     res.set('Content-Type', response.headers.get('content-type') || 'image/webp');
     res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set('CDN-Cache-Control', 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400');
+    res.set('Surrogate-Control', 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400');
     res.set('Access-Control-Allow-Origin', '*');
 
     const contentLength = response.headers.get('content-length');

@@ -1,6 +1,8 @@
 const { query } = require('../db');
+const { increment } = require('./usageFlushService');
 
-// Buffer for batching bandwidth log inserts
+// --- Bandwidth log buffer (stays in-memory, batched to DB) ---
+
 const bandwidthBuffer = [];
 let flushTimer = null;
 
@@ -43,9 +45,25 @@ function trackBandwidth(projectId, fileId, bytesServed, isTransform = false) {
   startFlushTimer();
 }
 
-async function trackUpload(projectId, originalSize) {
+// --- Usage counters (Redis-first, DB fallback) ---
+
+// Redis ref is injected via setRedis() at boot
+let _redis = null;
+
+function setRedis(redis) {
+  _redis = redis;
+}
+
+function trackUpload(projectId, originalSize) {
+  if (_redis) {
+    increment(_redis, projectId, 'uploads');
+    increment(_redis, projectId, 'upload_bytes', originalSize);
+    increment(_redis, projectId, 'api_requests');
+    return Promise.resolve();
+  }
+  // Fallback: direct DB upsert
   const today = new Date().toISOString().split('T')[0];
-  await query(
+  return query(
     `INSERT INTO usage_daily (project_id, date, uploads, upload_bytes, api_requests)
      VALUES ($1, $2, 1, $3, 1)
      ON CONFLICT (project_id, date) DO UPDATE
@@ -56,9 +74,15 @@ async function trackUpload(projectId, originalSize) {
   ).catch(() => {});
 }
 
-async function trackDownload(projectId, bytesServed) {
+function trackDownload(projectId, bytesServed) {
+  if (_redis) {
+    increment(_redis, projectId, 'downloads');
+    increment(_redis, projectId, 'download_bytes', bytesServed);
+    increment(_redis, projectId, 'api_requests');
+    return Promise.resolve();
+  }
   const today = new Date().toISOString().split('T')[0];
-  await query(
+  return query(
     `INSERT INTO usage_daily (project_id, date, downloads, download_bytes, api_requests)
      VALUES ($1, $2, 1, $3, 1)
      ON CONFLICT (project_id, date) DO UPDATE
@@ -69,9 +93,14 @@ async function trackDownload(projectId, bytesServed) {
   ).catch(() => {});
 }
 
-async function trackTransform(projectId) {
+function trackTransform(projectId) {
+  if (_redis) {
+    increment(_redis, projectId, 'transforms');
+    increment(_redis, projectId, 'api_requests');
+    return Promise.resolve();
+  }
   const today = new Date().toISOString().split('T')[0];
-  await query(
+  return query(
     `INSERT INTO usage_daily (project_id, date, transforms, api_requests)
      VALUES ($1, $2, 1, 1)
      ON CONFLICT (project_id, date) DO UPDATE
@@ -81,9 +110,14 @@ async function trackTransform(projectId) {
   ).catch(() => {});
 }
 
-async function trackDelete(projectId) {
+function trackDelete(projectId) {
+  if (_redis) {
+    increment(_redis, projectId, 'deletes');
+    increment(_redis, projectId, 'api_requests');
+    return Promise.resolve();
+  }
   const today = new Date().toISOString().split('T')[0];
-  await query(
+  return query(
     `INSERT INTO usage_daily (project_id, date, deletes, api_requests)
      VALUES ($1, $2, 1, 1)
      ON CONFLICT (project_id, date) DO UPDATE
@@ -93,9 +127,13 @@ async function trackDelete(projectId) {
   ).catch(() => {});
 }
 
-async function trackApiRequest(projectId) {
+function trackApiRequest(projectId) {
+  if (_redis) {
+    increment(_redis, projectId, 'api_requests');
+    return Promise.resolve();
+  }
   const today = new Date().toISOString().split('T')[0];
-  await query(
+  return query(
     `INSERT INTO usage_daily (project_id, date, api_requests)
      VALUES ($1, $2, 1)
      ON CONFLICT (project_id, date) DO UPDATE
@@ -104,12 +142,13 @@ async function trackApiRequest(projectId) {
   ).catch(() => {});
 }
 
+// --- Read-only queries (always hit Postgres — these are not hot-path) ---
+
 async function getCurrentUsage(project) {
   const now = new Date();
   const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const monthStart = `${period}-01`;
 
-  // Get monthly aggregates
   const { rows: usageRows } = await query(
     `SELECT COALESCE(SUM(uploads), 0) as uploads,
             COALESCE(SUM(downloads), 0) as downloads,
@@ -121,7 +160,6 @@ async function getCurrentUsage(project) {
     [project.id, monthStart]
   );
 
-  // Get file counts by type
   const { rows: fileCounts } = await query(
     `SELECT type, COUNT(*) as count
      FROM files
@@ -139,7 +177,6 @@ async function getCurrentUsage(project) {
     else filesByType.other += parseInt(row.count);
   }
 
-  // Get plan limits (optional — only if plans table exists and has data)
   let storageLimit = null;
   let bandwidthLimit = null;
   try {
@@ -203,6 +240,7 @@ async function getUsageHistory(projectId, days = 30) {
 }
 
 module.exports = {
+  setRedis,
   trackUpload, trackDownload, trackTransform, trackDelete, trackApiRequest,
   trackBandwidth, getCurrentUsage, getUsageHistory, flushBandwidthBuffer,
 };

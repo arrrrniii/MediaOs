@@ -40,4 +40,8 @@ module.exports = {
   videoMaxHeight: parseInt(process.env.VIDEO_MAX_HEIGHT || '1080'),
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE || '104857600'),
   concurrency: parseInt(process.env.CONCURRENCY || '3'),
+
+  // Usage flush (Redis → Postgres)
+  usageFlushIntervalMs: parseInt(process.env.USAGE_FLUSH_INTERVAL_MS || '10000'),
+  metadataCacheTtl: parseInt(process.env.METADATA_CACHE_TTL_SECONDS || '300'),
 };

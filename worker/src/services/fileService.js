@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { query } = require('../db');
 const { putBuffer, putFile, removeObject, getObject } = require('../minio');
 const { processImage, isAnimatedGif } = require('./imageProcessor');
-const { transcodeVideo, extractThumbnail, getVideoDuration, gifToMp4, cleanup, tmpPath } = require('./videoProcessor');
+const { transcodeVideo, extractThumbnail, getVideoDuration, cleanup, tmpPath } = require('./videoProcessor');
 const { slugify } = require('../utils/slugify');
 const { getMimeType } = require('../utils/mimeTypes');
 const { getFileType } = require('../utils/fileTypes');
@@ -59,38 +59,25 @@ async function uploadFile(file, project, options = {}, queue = null) {
     const animated = ext === '.gif' && await isAnimatedGif(file.buffer);
 
     if (animated) {
-      // Animated GIF -> MP4
-      const tempGif = tmpPath('.gif');
-      await fs.promises.writeFile(tempGif, file.buffer);
-      try {
-        const result = await gifToMp4(tempGif, { crf: config.videoCrf });
-        const storageKey = buildStorageKey(project.id, folder, slug, 'mp4');
-        await putFile(storageKey, result.path, 'video/mp4');
+      // Animated GIF -> store as-is (preserve animation)
+      const sharp = require('sharp');
+      const metadata = await sharp(file.buffer).metadata();
+      const storageKey = buildStorageKey(project.id, folder, slug, 'gif');
+      await putBuffer(storageKey, file.buffer, 'image/gif');
 
-        // Extract thumbnail
-        const thumbPath = await extractThumbnail(result.path);
-        const thumbKey = storageKey.replace('.mp4', '_thumb.webp');
-        await putFile(thumbKey, thumbPath, 'image/webp');
-
-        const duration = await getVideoDuration(result.path);
-        cleanup(tempGif, result.path, thumbPath);
-
-        const processingMs = Date.now() - start;
-        const row = await insertFileRecord({
-          projectId: project.id, storageKey, filename: `${slug}-${path.basename(storageKey).split('/').pop()}`,
-          originalName: file.originalname, folder, type: 'video', mimeType: 'video/mp4',
-          size: result.size, originalSize: file.buffer.length, duration, thumbnailKey: thumbKey,
-          status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
-        });
-        await updateProjectCounters(project.id, result.size);
-        const response = formatResponse(row, project.id);
-        trackUpload(project.id, file.buffer.length).catch(() => {});
-        dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
-        return response;
-      } catch (err) {
-        cleanup(tempGif);
-        throw err;
-      }
+      const processingMs = Date.now() - start;
+      const row = await insertFileRecord({
+        projectId: project.id, storageKey, filename: path.basename(storageKey),
+        originalName: file.originalname, folder, type: 'image', mimeType: 'image/gif',
+        size: file.buffer.length, originalSize: file.buffer.length,
+        width: metadata.width || null, height: metadata.height || null,
+        status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
+      });
+      await updateProjectCounters(project.id, file.buffer.length);
+      const response = formatResponse(row, project.id);
+      trackUpload(project.id, file.buffer.length).catch(() => {});
+      dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
+      return response;
     }
 
     // Regular image -> WebP

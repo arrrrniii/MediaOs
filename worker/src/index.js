@@ -61,11 +61,19 @@ async function boot() {
     redis = null;
   }
 
-  // 7. Create Express app
+  // 7. Wire Redis into usage tracking + start flush interval
+  if (redis) {
+    const { setRedis } = require('./services/usageService');
+    const { startFlushInterval } = require('./services/usageFlushService');
+    setRedis(redis);
+    startFlushInterval(redis);
+  }
+
+  // 8. Create Express app
   const app = createApp();
   app.locals.redis = redis;
 
-  // 8. Start listening
+  // 9. Start listening
   app.listen(config.port, () => {
     console.log(`MediaOS worker listening on port ${config.port}`);
     console.log(`Environment: ${config.nodeEnv}`);

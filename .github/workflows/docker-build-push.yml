@@ -1,0 +1,80 @@
+name: Build & Push Docker Images
+
+on:
+  push:
+    branches: [main, production]
+    paths-ignore:
+      - '*.md'
+      - 'DOCKERHUB_README.md'
+      - 'docs/**'
+      - 'LICENSE'
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      worker: ${{ steps.filter.outputs.worker }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            worker:
+              - 'worker/**'
+              - 'docker-compose.yml'
+            dashboard:
+              - 'dashboard/**'
+              - 'docker-compose.yml'
+
+  build-worker:
+    name: Build & push worker
+    needs: changes
+    if: needs.changes.outputs.worker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          push: true
+          tags: |
+            arrrrniii/mediaos:worker
+            arrrrniii/mediaos:worker-${{ github.sha }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+  build-dashboard:
+    name: Build & push dashboard
+    needs: changes
+    if: needs.changes.outputs.dashboard == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./dashboard
+          push: true
+          tags: |
+            arrrrniii/mediaos:dashboard
+            arrrrniii/mediaos:dashboard-${{ github.sha }}
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
