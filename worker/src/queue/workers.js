@@ -201,18 +201,6 @@ async function drainOutbox() {
   });
 }
 
-// ── Stub processors (filled by later phases) ────────────
-function stubProcessor(name, phase) {
-  return async (job) => {
-    // Durable no-op so the queue exists and jobs are accepted without error.
-    // The job_attempts ledger row is written by addJob + the worker lifecycle
-    // events, so an enqueued archive/restore is visible and retryable even
-    // though its processor is not yet implemented.
-    console.log(`[${name}] job ${job.id} accepted — processor not yet implemented (Phase ${phase})`);
-    return { stub: true, notImplemented: true };
-  };
-}
-
 // ── Lifecycle scan processor ────────────────────────────
 /**
  * Run the cold-file scanner. A payload with a projectId scans just that
@@ -227,9 +215,95 @@ async function processLifecycleJob(job) {
   return summary;
 }
 
+// ── Reconciliation processor (Phase 7) ──────────────────
+/**
+ * Self-healing reconciler. Job kinds:
+ *   'reconcile.all'      — run every check (the repeatable pass).
+ *   'reconcile.category' — run one category ({ category } in the payload).
+ *   'health.snapshot'    — compute + persist a health snapshot.
+ */
+async function processReconciliationJob(job) {
+  const name = job.name;
+  if (name === 'health.snapshot') {
+    const healthService = require('../services/healthService');
+    const r = await healthService.computeHealth();
+    console.log(`[health] snapshot ${r.snapshotId}: ${JSON.stringify(r.metrics)}`);
+    return { snapshotId: r.snapshotId };
+  }
+
+  const reconcileService = require('../services/reconcileService');
+  const categories = name === 'reconcile.category' && job.data && job.data.category
+    ? [job.data.category]
+    : undefined;
+  const summary = await reconcileService.runAllChecks({ categories });
+  console.log(`[reconcile] ${summary.kind} run ${summary.runId}: checked=${summary.checked} issues=${summary.issuesFound} repaired=${summary.repaired}`);
+  return summary;
+}
+
+// ── Cleanup processor (Phase 7) ─────────────────────────
+/**
+ * Housekeeping: prune data the system accumulates but does not need forever.
+ *   - health_snapshots  keep the latest HEALTH_SNAPSHOT_KEEP rows.
+ *   - outbox_events     delete 'delivered' rows older than the retention window.
+ *   - job_attempts      delete terminal (completed/dead) rows older than it.
+ *   - reconciliation    delete runs older than the retention window (issues
+ *                       cascade).
+ *   - temp uploads      delegate to the reconciler's expired_temp_uploads check.
+ * Every statement is idempotent; running the job twice deletes nothing extra.
+ */
+async function processCleanupJob() {
+  const retentionMs = config.cleanupRetentionMs;
+  const keepSnapshots = config.healthSnapshotKeep;
+  const result = {};
+
+  const snap = await query(
+    `DELETE FROM health_snapshots
+      WHERE id NOT IN (
+        SELECT id FROM health_snapshots ORDER BY captured_at DESC LIMIT $1)`,
+    [keepSnapshots]
+  );
+  result.health_snapshots_pruned = snap.rowCount || 0;
+
+  const outbox = await query(
+    `DELETE FROM outbox_events
+      WHERE status = 'delivered'
+        AND COALESCE(delivered_at, created_at) < NOW() - ($1 || ' milliseconds')::interval`,
+    [String(retentionMs)]
+  );
+  result.outbox_events_pruned = outbox.rowCount || 0;
+
+  const jobs = await query(
+    `DELETE FROM job_attempts
+      WHERE status IN ('completed', 'dead')
+        AND COALESCE(finished_at, created_at) < NOW() - ($1 || ' milliseconds')::interval`,
+    [String(retentionMs)]
+  );
+  result.job_attempts_pruned = jobs.rowCount || 0;
+
+  const runs = await query(
+    `DELETE FROM reconciliation_runs
+      WHERE started_at < NOW() - ($1 || ' milliseconds')::interval`,
+    [String(retentionMs)]
+  );
+  result.reconciliation_runs_pruned = runs.rowCount || 0;
+
+  // Expired temp uploads — reuse the reconciler check so the logic lives once.
+  try {
+    const reconcileService = require('../services/reconcileService');
+    const r = await reconcileService.runAllChecks({ categories: ['expired_temp_uploads'] });
+    result.temp_uploads_deleted = r.repaired;
+  } catch (err) {
+    console.error('[cleanup] temp-upload sweep failed:', err.message);
+  }
+
+  console.log(`[cleanup] ${JSON.stringify(result)}`);
+  return result;
+}
+
 // ── Boot / shutdown ─────────────────────────────────────
 let outboxSchedulerStarted = false;
 let lifecycleSchedulerStarted = false;
+let controlPlaneSchedulerStarted = false;
 
 /**
  * Start every worker and the outbox poller. Idempotent-ish: intended to be
@@ -262,8 +336,8 @@ async function startWorkers() {
   makeWorker(QUEUES.LIFECYCLE, (job) => processLifecycleJob(job), { concurrency: 1 });
   makeWorker(QUEUES.ARCHIVE, (job) => processArchiveJob(job.data), { concurrency: 1 });
   makeWorker(QUEUES.RESTORE, (job) => processRestoreJob(job.data), { concurrency: 1 });
-  makeWorker(QUEUES.RECONCILIATION, stubProcessor('reconciliation', 7), { concurrency: 1 });
-  makeWorker(QUEUES.CLEANUP, stubProcessor('cleanup', 5), { concurrency: 1 });
+  makeWorker(QUEUES.RECONCILIATION, (job) => processReconciliationJob(job), { concurrency: 1 });
+  makeWorker(QUEUES.CLEANUP, () => processCleanupJob(), { concurrency: 1 });
 
   // Repeatable outbox drain. A fixed repeat jobId means only one schedule
   // exists no matter how many nodes call startWorkers.
@@ -291,7 +365,27 @@ async function startWorkers() {
     lifecycleSchedulerStarted = true;
   }
 
-  console.log('BullMQ workers started (media, webhook, outbox, lifecycle scan, archive, restore + reconciliation stub)');
+  // Repeatable self-healing schedules (Phase 7). Fixed repeat jobIds keep one
+  // schedule per queue regardless of how many nodes boot.
+  if (!controlPlaneSchedulerStarted) {
+    const reconcileQueue = getQueue(QUEUES.RECONCILIATION);
+    await reconcileQueue.add('reconcile.all', {}, {
+      repeat: { pattern: config.reconcileScanCron },
+      jobId: 'reconcile-all', removeOnComplete: true, removeOnFail: 100,
+    });
+    await reconcileQueue.add('health.snapshot', {}, {
+      repeat: { every: config.healthSnapshotEveryMs },
+      jobId: 'health-snapshot', removeOnComplete: true, removeOnFail: 100,
+    });
+    const cleanupQueue = getQueue(QUEUES.CLEANUP);
+    await cleanupQueue.add('cleanup', {}, {
+      repeat: { pattern: config.cleanupCron },
+      jobId: 'cleanup-daily', removeOnComplete: true, removeOnFail: 100,
+    });
+    controlPlaneSchedulerStarted = true;
+  }
+
+  console.log('BullMQ workers started (media, webhook, outbox, lifecycle scan, archive, restore, reconciliation, cleanup)');
 }
 
 /** Close every worker. Queues are closed separately via queue.closeAll(). */
@@ -300,6 +394,7 @@ async function stopWorkers() {
   workers.length = 0;
   outboxSchedulerStarted = false;
   lifecycleSchedulerStarted = false;
+  controlPlaneSchedulerStarted = false;
 }
 
 module.exports = {
@@ -309,4 +404,6 @@ module.exports = {
   routeOutboxEvent,
   markJobAttempt,
   processLifecycleJob,
+  processReconciliationJob,
+  processCleanupJob,
 };

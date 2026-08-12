@@ -59,6 +59,29 @@ module.exports = {
   usageFlushIntervalMs: parseInt(process.env.USAGE_FLUSH_INTERVAL_MS || '10000'),
   metadataCacheTtl: parseInt(process.env.METADATA_CACHE_TTL_SECONDS || '300'),
 
+  // ── Self-healing reconciler (Phase 7) ─────────────────
+  // A file stuck in a transient state (processing/archiving/restoring) with no
+  // in-flight job for longer than this is considered stuck and re-driven.
+  reconcileStuckMs: parseInt(process.env.RECONCILE_STUCK_MS || String(30 * 60 * 1000), 10),
+  // An orphan object (in storage, no file_objects row) is only deleted once it
+  // is older than this — a just-uploaded object whose DB row is mid-commit is
+  // never mistaken for an orphan.
+  orphanMinAgeMs: parseInt(process.env.ORPHAN_MIN_AGE_MS || String(24 * 60 * 60 * 1000), 10),
+  // Leftover `_processing_*` temp uploads older than this are deleted.
+  tempUploadTtlMs: parseInt(process.env.TEMP_UPLOAD_TTL_MS || String(24 * 60 * 60 * 1000), 10),
+  // Per-check batch ceiling so a single reconcile pass stays bounded/cheap.
+  reconcileBatch: parseInt(process.env.RECONCILE_BATCH || '500', 10),
+  // How many objects the corrupt-checksum check re-hashes per pass.
+  reconcileCorruptSample: parseInt(process.env.RECONCILE_CORRUPT_SAMPLE || '25', 10),
+  // Retain at most this many health snapshots (cleanup prunes the rest).
+  healthSnapshotKeep: parseInt(process.env.HEALTH_SNAPSHOT_KEEP || '500', 10),
+  // Delivered outbox events + completed job_attempts older than this are pruned.
+  cleanupRetentionMs: parseInt(process.env.CLEANUP_RETENTION_MS || String(30 * 24 * 60 * 60 * 1000), 10),
+  // Repeatable schedules (cron patterns / intervals) for the control plane.
+  reconcileScanCron: process.env.RECONCILE_SCAN_CRON || '0 */6 * * *',   // every 6h
+  healthSnapshotEveryMs: parseInt(process.env.HEALTH_SNAPSHOT_EVERY_MS || String(5 * 60 * 1000), 10),
+  cleanupCron: process.env.CLEANUP_CRON || '30 4 * * *',                 // daily 04:30
+
   // Rate limits (requests per minute)
   apiRateLimit: parseInt(process.env.API_RATE_LIMIT || '100'),      // per API key, fallback when api_keys.rate_limit is null
   loginRateLimit: parseInt(process.env.LOGIN_RATE_LIMIT || '10'),   // per IP and per email

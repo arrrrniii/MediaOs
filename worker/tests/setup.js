@@ -101,7 +101,18 @@ const mockMinio = {
 };
 
 jest.mock('../src/minio', () => ({
-  minioClient: { bucketExists: jest.fn(async () => true) },
+  minioClient: {
+    bucketExists: jest.fn(async () => true),
+    // Empty list stream by default; orphan/temp reconcile tests override this.
+    listObjectsV2: jest.fn(() => {
+      const { Readable } = require('stream');
+      const r = new Readable({ objectMode: true });
+      r.push(null);
+      return r;
+    }),
+    statObject: jest.fn(async () => ({ size: 1000 })),
+    removeObject: jest.fn(async () => {}),
+  },
   ensureBucket: jest.fn(),
   putBuffer: jest.fn(async (key, buffer, contentType) => {
     mockMinio.putBufferCalls.push({ key, buffer, contentType });
@@ -151,6 +162,17 @@ jest.mock('../src/config', () => ({
   // Fixed 32-byte hex key so secretBox round-trips in unit/integration tests.
   storageEncryptionKey: '0'.repeat(64),
   archiveHotGraceMs: 7 * 24 * 60 * 60 * 1000,
+  // Phase 7 reconciler knobs.
+  reconcileStuckMs: 30 * 60 * 1000,
+  orphanMinAgeMs: 24 * 60 * 60 * 1000,
+  tempUploadTtlMs: 24 * 60 * 60 * 1000,
+  reconcileBatch: 500,
+  reconcileCorruptSample: 25,
+  healthSnapshotKeep: 500,
+  cleanupRetentionMs: 30 * 24 * 60 * 60 * 1000,
+  reconcileScanCron: '0 */6 * * *',
+  healthSnapshotEveryMs: 5 * 60 * 1000,
+  cleanupCron: '30 4 * * *',
   webpQuality: 80,
   maxWidth: 1600,
   maxHeight: 1600,

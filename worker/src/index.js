@@ -68,10 +68,12 @@ async function boot() {
     const { startFlushInterval } = require('./services/usageFlushService');
     const { setRedis: setAccessRedis } = require('./services/accessTrackingService');
     const { startAccessFlush } = require('./services/lifecycleFlushService');
+    const { setRedis: setReconcileRedis } = require('./services/reconcileService');
     setRedis(redis);
     startFlushInterval(redis);
     setAccessRedis(redis);
     startAccessFlush(redis);
+    setReconcileRedis(redis);
   }
 
   // 8. Start durable BullMQ workers + the outbox poller. With Redis present

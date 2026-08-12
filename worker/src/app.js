@@ -18,6 +18,7 @@ const adminUsageRoutes = require('./routes/adminUsage');
 const jobRoutes = require('./routes/jobs');
 const lifecycleRoutes = require('./routes/lifecycle');
 const backendRoutes = require('./routes/backends');
+const systemRoutes = require('./routes/system');
 const setupRoutes = require('./routes/setup');
 const Queue = require('./services/queue');
 const config = require('./config');
@@ -66,6 +67,9 @@ function createApp() {
   // Account routes: system-admin provisioning (master key) + legacy login
   // + the session-scoped password change.
   app.use(accountRoutes);
+
+  // System health + reconciliation control (master key — operator, not tenant).
+  app.use(systemRoutes);
 
   // Customer routes (session auth — scoped to an account membership)
   app.use(projectRoutes);
