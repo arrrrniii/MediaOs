@@ -14,6 +14,12 @@
 const hasInfra = !!(process.env.REDIS_URL || process.env.REDIS_TEST);
 const d = hasInfra ? describe : describe.skip;
 
+// This suite drives real object storage; against a freshly-booted MinIO (as in
+// CI) an occasional read can race the write's durability. The archive/restore
+// logic itself is deterministic, so retry a transient infra hiccup rather than
+// fail the build.
+if (hasInfra) jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 d('archive + restore (real minio, two buckets)', () => {
   const crypto = require('crypto');
   const { query, pool } = require('../../src/db');

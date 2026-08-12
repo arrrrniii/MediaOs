@@ -77,9 +77,19 @@ jobs:
             curl -fsS http://localhost:9000/minio/health/live && break
             sleep 2
           done
+          # Confirm the S3 data plane is actually serving (not just the health
+          # endpoint) with a put/stat/get round-trip before tests start, so a
+          # freshly-booted MinIO can't race the first writes.
           docker run --rm --network host --entrypoint sh minio/mc -c '
-            mc alias set m http://localhost:9000 mvadmin test_minio_password &&
-            mc mb --ignore-existing m/mediaos'
+            set -e
+            for i in $(seq 1 30); do
+              mc alias set m http://localhost:9000 mvadmin test_minio_password && break
+              sleep 1
+            done
+            mc mb --ignore-existing m/mediaos
+            echo readycheck > /tmp/rc && mc cp /tmp/rc m/mediaos/.readycheck
+            mc stat m/mediaos/.readycheck >/dev/null
+            mc rm m/mediaos/.readycheck'
       - run: npm ci
       - name: Run migrations against real Postgres
         run: npm run migrate

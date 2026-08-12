@@ -9,9 +9,11 @@ test('lifecycle inbox renders; table or empty state, with an action menu when po
   await page.goto('/dashboard/lifecycle');
   await expect(page.getByRole('heading', { name: 'Lifecycle' })).toBeVisible();
 
-  // Header controls are always present.
+  // Header controls are always present. "to review" appears in more than one
+  // place (a count summary and, when empty, the empty-state copy), so scope to
+  // the first match rather than tripping Playwright's strict mode.
   await expect(page.getByRole('button', { name: /refresh/i })).toBeVisible();
-  await expect(page.getByText(/to review/i)).toBeVisible();
+  await expect(page.getByText(/to review/i).first()).toBeVisible();
 
   // Wait for loading to settle, then assert exactly one of the two end states.
   await expect(page.getByText('Loading...')).toHaveCount(0);
