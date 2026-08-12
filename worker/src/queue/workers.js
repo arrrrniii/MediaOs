@@ -289,6 +289,25 @@ async function processCleanupJob() {
   );
   result.reconciliation_runs_pruned = runs.rowCount || 0;
 
+  // High-volume append-only logs: retain by age. These grow unbounded with
+  // traffic, so prune them on the same cleanup pass (indexes on created_at
+  // added in migration 013 keep the delete cheap). A longer window can be set
+  // via LOG_RETENTION_MS.
+  const logRetentionMs = config.logRetentionMs;
+  for (const table of ['bandwidth_log', 'webhook_deliveries', 'video_playback_events']) {
+    try {
+      const r = await query(
+        `DELETE FROM ${table}
+          WHERE created_at < NOW() - ($1 || ' milliseconds')::interval`,
+        [String(logRetentionMs)]
+      );
+      result[`${table}_pruned`] = r.rowCount || 0;
+    } catch (err) {
+      // A table may not exist on an older schema; skip rather than abort cleanup.
+      result[`${table}_pruned`] = `skipped: ${err.message}`;
+    }
+  }
+
   // Expired temp uploads — reuse the reconciler check so the logic lives once.
   try {
     const reconcileService = require('../services/reconcileService');

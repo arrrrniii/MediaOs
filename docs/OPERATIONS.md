@@ -111,6 +111,39 @@ migrations are forward-only.
 Supported paths: upgrades from the previous minor release are tested in
 CI; skipping releases requires stepping through each minor version.
 
+## Database roles and pooling
+
+By default the worker connects, migrates, and serves as a single `PG_USER`.
+For least privilege you can split DDL from runtime:
+
+```sql
+-- Runtime role: DML only, no schema changes
+CREATE ROLE mediaos_runtime LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE mediaos TO mediaos_runtime;
+GRANT USAGE ON SCHEMA public TO mediaos_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO mediaos_runtime;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO mediaos_runtime;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO mediaos_runtime;
+
+-- Migration role: owns the schema / runs DDL
+CREATE ROLE mediaos_migrator LOGIN PASSWORD '...';
+GRANT ALL ON DATABASE mediaos TO mediaos_migrator;
+```
+
+Then set `PG_USER=mediaos_runtime` and `PG_MIGRATION_USER=mediaos_migrator`
+(+ `PG_MIGRATION_PASSWORD`). Migrations — at boot and via `npm run migrate` —
+run under the migration role; all request traffic uses the runtime role.
+Concurrent migration runners are serialized by an advisory lock, so multiple
+worker replicas can boot safely.
+
+Pool sizing is env-tunable: `PG_POOL_MAX` (default 20),
+`PG_POOL_IDLE_TIMEOUT_MS`, `PG_POOL_CONNECTION_TIMEOUT_MS`.
+
+High-volume append-only logs (`bandwidth_log`, `webhook_deliveries`,
+`video_playback_events`) are pruned by the cleanup job after `LOG_RETENTION_MS`
+(default 90 days); `created_at` indexes keep the delete cheap.
+
 ## Development environment
 
 ```bash

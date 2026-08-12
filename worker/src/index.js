@@ -22,9 +22,24 @@ async function boot() {
     process.exit(1);
   }
 
-  // 3. Run migrations
+  // 3. Run migrations under the migration role (falls back to the runtime
+  //    role when PG_MIGRATION_USER is unset), then close that pool. The
+  //    runtime pool never needs DDL privileges.
   try {
-    await migrate(pool);
+    const { Pool } = require('pg');
+    const migrationPool = new Pool({
+      host: config.pg.host,
+      port: config.pg.port,
+      database: config.pg.database,
+      user: config.pg.migrationUser,
+      password: config.pg.migrationPassword,
+      max: 2,
+    });
+    try {
+      await migrate(migrationPool);
+    } finally {
+      await migrationPool.end();
+    }
   } catch (err) {
     console.error('Migration failed:', err.message);
     process.exit(1);

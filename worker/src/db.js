@@ -7,9 +7,9 @@ const pool = new Pool({
   database: config.pg.database,
   user: config.pg.user,
   password: config.pg.password,
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  max: config.pg.poolMax,
+  idleTimeoutMillis: config.pg.poolIdleTimeoutMs,
+  connectionTimeoutMillis: config.pg.poolConnectionTimeoutMs,
 });
 
 pool.on('error', (err) => {

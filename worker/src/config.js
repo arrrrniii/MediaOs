@@ -8,6 +8,15 @@ module.exports = {
     database: process.env.PG_DATABASE || 'mediaos',
     user: process.env.PG_USER || 'mediaos',
     password: process.env.PG_PASSWORD || '',
+    // Runtime pool limits (env-tunable).
+    poolMax: parseInt(process.env.PG_POOL_MAX || '20'),
+    poolIdleTimeoutMs: parseInt(process.env.PG_POOL_IDLE_TIMEOUT_MS || '30000'),
+    poolConnectionTimeoutMs: parseInt(process.env.PG_POOL_CONNECTION_TIMEOUT_MS || '5000'),
+    // Optional separate role for DDL/migrations. When set, migrations connect
+    // as this privileged role while the runtime pool uses the least-privilege
+    // PG_USER (which needs no DDL rights). Falls back to PG_USER/PG_PASSWORD.
+    migrationUser: process.env.PG_MIGRATION_USER || process.env.PG_USER || 'mediaos',
+    migrationPassword: process.env.PG_MIGRATION_PASSWORD || process.env.PG_PASSWORD || '',
   },
 
   minio: {
@@ -80,6 +89,9 @@ module.exports = {
   healthSnapshotKeep: parseInt(process.env.HEALTH_SNAPSHOT_KEEP || '500', 10),
   // Delivered outbox events + completed job_attempts older than this are pruned.
   cleanupRetentionMs: parseInt(process.env.CLEANUP_RETENTION_MS || String(30 * 24 * 60 * 60 * 1000), 10),
+  // Retention for high-volume append-only logs (bandwidth, webhook deliveries,
+  // playback events). Default 90 days.
+  logRetentionMs: parseInt(process.env.LOG_RETENTION_MS || String(90 * 24 * 60 * 60 * 1000), 10),
   // Repeatable schedules (cron patterns / intervals) for the control plane.
   reconcileScanCron: process.env.RECONCILE_SCAN_CRON || '0 */6 * * *',   // every 6h
   healthSnapshotEveryMs: parseInt(process.env.HEALTH_SNAPSHOT_EVERY_MS || String(5 * 60 * 1000), 10),

@@ -129,12 +129,14 @@ module.exports = { migrate, verify };
 // only checks that applied migrations match the files on disk.
 if (require.main === module) {
   const config = require('../src/config');
+  // Connect as the migration role (PG_MIGRATION_USER) when configured, so DDL
+  // runs with elevated rights while the app's runtime role stays DDL-less.
   const pool = new Pool({
     host: config.pg.host,
     port: config.pg.port,
     database: config.pg.database,
-    user: config.pg.user,
-    password: config.pg.password,
+    user: config.pg.migrationUser,
+    password: config.pg.migrationPassword,
     max: 2,
   });
 

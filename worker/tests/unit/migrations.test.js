@@ -163,3 +163,41 @@ describe('012_video.sql', () => {
     expect(sql).not.toMatch(/DROP COLUMN/);
   });
 });
+
+describe('013_db_hardening.sql', () => {
+  const sql = fs.readFileSync(
+    path.join(MIGRATIONS_DIR, '013_db_hardening.sql'),
+    'utf8'
+  );
+
+  it('adds status/access/size CHECK constraints on files', () => {
+    expect(sql).toMatch(/files_status_check/);
+    expect(sql).toMatch(/files_access_check/);
+    expect(sql).toMatch(/files_size_nonneg/);
+  });
+
+  it('guards non-negative counters and rate limits', () => {
+    expect(sql).toMatch(/projects_storage_used_nonneg/);
+    expect(sql).toMatch(/projects_file_count_nonneg/);
+    expect(sql).toMatch(/api_keys_rate_limit_nonneg/);
+  });
+
+  it('adds the missing foreign-key indexes', () => {
+    expect(sql).toMatch(/idx_files_dedup_of/);
+    expect(sql).toMatch(/idx_files_uploaded_by/);
+    expect(sql).toMatch(/idx_direct_uploads_file_id/);
+    expect(sql).toMatch(/idx_upload_sessions_file_id/);
+  });
+
+  it('creates the lifecycle scan index exactly as specified', () => {
+    expect(sql).toMatch(/files_lifecycle_scan_idx/);
+    expect(sql).toMatch(/lifecycle_state = 'active'/);
+    expect(sql).toMatch(/protected_from_delete = false/);
+  });
+
+  it('is idempotent (guards constraints, IF NOT EXISTS indexes, no drops)', () => {
+    expect(sql).toMatch(/IF NOT EXISTS \(SELECT 1 FROM pg_constraint/);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS/);
+    expect(sql).not.toMatch(/DROP /);
+  });
+});
