@@ -1,4 +1,4 @@
-# Docker Compose using pre-built images from Docker Hub
+# Docker Compose using pre-built images from GHCR (ghcr.io)
 # Usage: docker compose -f docker-compose.hub.yml up -d
 
 services:
@@ -133,7 +133,7 @@ services:
       - mediaos
 
   worker:
-    image: arrrrniii/mediaos:worker
+    image: ghcr.io/arrrrniii/mediaos-worker:latest
     container_name: mv-worker
     ports:
       # Loopback only — see docker-compose.yml for rationale (nginx/dashboard
@@ -192,7 +192,7 @@ services:
       - mediaos
 
   dashboard:
-    image: arrrrniii/mediaos:dashboard
+    image: ghcr.io/arrrrniii/mediaos-dashboard:latest
     container_name: mv-dashboard
     profiles: ["dashboard"]
     ports:

@@ -1,10 +1,7 @@
 name: Update Docker Hub Description
 
 on:
-  push:
-    branches: [main, production]
-    paths:
-      - DOCKERHUB_README.md
+  workflow_dispatch: {}   # disabled: project publishes to GHCR, not Docker Hub
 
 jobs:
   update-description:
