@@ -16,7 +16,7 @@ describe('Health Check', () => {
     // May be 200 or 503 depending on mock behavior
     expect([200, 503]).toContain(res.status);
     expect(res.body.status).toBeDefined();
-    expect(res.body.version).toBe('1.0.0');
+    expect(res.body.version).toBe(require('../../package.json').version);
     expect(res.body.services).toBeDefined();
     expect(res.body.queue).toBeDefined();
   });

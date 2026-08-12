@@ -1,0 +1,25 @@
+# Development override — publishes backing services to localhost so the
+# worker/dashboard can run outside Docker (npm run dev) against them.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres minio redis
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  minio:
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+
+  redis:
+    ports:
+      # 6380 on the host: 6379 is commonly taken by other local projects.
+      # Set REDIS_URL=redis://:<password>@localhost:6380 when running the
+      # worker outside Docker.
+      - "127.0.0.1:6380:6379"
+
+  imgproxy:
+    ports:
+      - "127.0.0.1:8080:8080"
