@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import { Checkbox } from '@/components/ui/checkbox';
+import VariantsManager from '@/components/projects/VariantsManager';
 import {
   Select,
   SelectContent,
@@ -45,6 +47,7 @@ export default function SettingsPage() {
   const [maxWidth, setMaxWidth] = useState(4096);
   const [maxHeight, setMaxHeight] = useState(4096);
   const [defaultAccess, setDefaultAccess] = useState<'public' | 'private'>('public');
+  const [strictTransforms, setStrictTransforms] = useState(false);
 
   const fetchProject = useCallback(async () => {
     try {
@@ -58,6 +61,7 @@ export default function SettingsPage() {
         setMaxWidth(p.settings.max_width);
         setMaxHeight(p.settings.max_height);
         setDefaultAccess(p.settings.default_access);
+        setStrictTransforms(p.settings.strict_transforms === true);
       }
     } catch {
       toast.error('Failed to load project');
@@ -84,6 +88,7 @@ export default function SettingsPage() {
             max_width: maxWidth,
             max_height: maxHeight,
             default_access: defaultAccess,
+            strict_transforms: strictTransforms,
           },
         }),
       });
@@ -214,11 +219,27 @@ export default function SettingsPage() {
               </SelectContent>
             </Select>
           </div>
+          <div className="flex items-start gap-3 rounded-lg border border-border/50 bg-muted/20 p-3">
+            <Checkbox
+              id="strict-transforms"
+              checked={strictTransforms}
+              onCheckedChange={(v) => setStrictTransforms(v === true)}
+              className="mt-0.5"
+            />
+            <div className="space-y-1">
+              <Label htmlFor="strict-transforms" className="cursor-pointer">Strict transforms</Label>
+              <p className="text-xs text-muted-foreground">
+                Only allow named variants to be delivered. Arbitrary <code className="font-mono">/img/&lt;mode&gt;/&lt;w&gt;/&lt;h&gt;</code> requests are refused.
+              </p>
+            </div>
+          </div>
           <Button onClick={handleSave} disabled={saving || !name.trim()}>
             {saving ? 'Saving...' : 'Save Changes'}
           </Button>
         </CardContent>
       </Card>
+
+      <VariantsManager projectId={projectId} />
 
       <Separator />
 

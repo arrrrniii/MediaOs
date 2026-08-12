@@ -513,7 +513,15 @@ async function checkOrphanObjects(runId) {
   const nextAfter = page.length >= config.reconcileBatch ? page[page.length - 1].name : '';
   await kvSet(CURSOR_KEY, { after: nextAfter });
 
-  const candidates = page.filter((o) => !o.name.startsWith('_processing_'));
+  // Skip system-managed prefixes that intentionally have no file_objects row:
+  //   _processing_  — temp video uploads (owned by expired_temp_uploads)
+  //   _cache/       — rendered transform cache (owned by cache_version / purge)
+  //   _multipart/   — in-flight resumable upload parts (owned by the session)
+  const candidates = page.filter((o) =>
+    !o.name.startsWith('_processing_') &&
+    !o.name.startsWith('_cache/') &&
+    !o.name.startsWith('_multipart/')
+  );
   summary.checked = candidates.length;
   if (candidates.length === 0) return summary;
 

@@ -15,6 +15,18 @@ import type {
   WebhookListResult,
   UrlOptions,
   MediaOSError,
+  Variant,
+  VariantInput,
+  VariantListResult,
+  VariantUrlOptions,
+  SrcsetResult,
+  DirectUploadGrant,
+  DirectUploadOptions,
+  MultipartStartOptions,
+  MultipartSession,
+  MultipartPartResult,
+  MultipartCompleteResult,
+  PurgeCacheResult,
 } from './types';
 
 export * from './types';
@@ -39,6 +51,7 @@ export class MediaOS {
   files: MediaOS['_files'];
   usage: MediaOS['_usage'];
   webhooks: MediaOS['_webhooks'];
+  variants: MediaOS['_variants'];
 
   constructor(config: MediaOSConfig) {
     if (!config.url) throw new Error('MediaOS: url is required');
@@ -51,6 +64,7 @@ export class MediaOS {
     this.files = this._files;
     this.usage = this._usage;
     this.webhooks = this._webhooks;
+    this.variants = this._variants;
   }
 
   // ── HTTP helper ──────────────────────────────────────
@@ -58,7 +72,7 @@ export class MediaOS {
   private async request<T>(
     method: string,
     path: string,
-    options: { body?: unknown; params?: Record<string, string | number | undefined>; formData?: FormData } = {}
+    options: { body?: unknown; params?: Record<string, string | number | undefined>; formData?: FormData; headers?: Record<string, string> } = {}
   ): Promise<T> {
     let url = `${this.baseUrl}/api/v1${path}`;
 
@@ -78,6 +92,7 @@ export class MediaOS {
 
     const headers: Record<string, string> = {
       'X-API-Key': this.apiKey,
+      ...(options.headers || {}),
     };
 
     let body: string | FormData | undefined;
@@ -141,7 +156,114 @@ export class MediaOS {
     if (options.folder) params.folder = options.folder;
     if (options.access) params.access = options.access;
 
-    return this.request<UploadResult>('POST', '/upload', { formData, params });
+    const headers: Record<string, string> = {};
+    if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
+
+    return this.request<UploadResult>('POST', '/upload', { formData, params, headers });
+  }
+
+  // ── Direct one-time uploads ────────────────────────
+
+  /** Create a one-time presigned upload grant (no bytes transferred yet). */
+  async createDirectUpload(options: DirectUploadOptions = {}): Promise<DirectUploadGrant> {
+    return this.request<DirectUploadGrant>('POST', '/uploads/direct', {
+      body: {
+        content_type: options.contentType ?? options.content_type,
+        max_bytes: options.maxBytes ?? options.max_bytes,
+        access: options.access,
+        folder: options.folder,
+        idempotency_key: options.idempotencyKey,
+        expires_in: options.expiresIn,
+      },
+    });
+  }
+
+  /**
+   * One-shot direct upload: create a grant, then PUT the bytes to it. Returns
+   * the created file. The PUT goes to the absolute grant URL, not /api/v1.
+   */
+  async directUpload(file: Buffer | Blob, options: DirectUploadOptions = {}): Promise<UploadResult> {
+    const grant = await this.createDirectUpload(options);
+    const body = Buffer.isBuffer(file) ? new Blob([file]) : file;
+    const res = await fetch(grant.upload_url, {
+      method: 'PUT',
+      headers: { 'Content-Type': options.contentType ?? options.content_type ?? 'application/octet-stream' },
+      body,
+    });
+    if (!res.ok) {
+      let data: MediaOSError;
+      try { data = await res.json() as MediaOSError; } catch { data = { error: res.statusText, code: 'UNKNOWN', status: res.status }; }
+      throw new MediaOSApiError(data.error || res.statusText, data.code || 'UNKNOWN', res.status);
+    }
+    return await res.json() as UploadResult;
+  }
+
+  // ── Resumable multipart uploads ────────────────────
+
+  private _multipart = {
+    start: (options: MultipartStartOptions = {}): Promise<MultipartSession> => {
+      const headers: Record<string, string> = {};
+      if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
+      return this.request<MultipartSession>('POST', '/uploads/multipart/start', {
+        body: {
+          filename: options.filename, size: options.size, content_type: options.contentType,
+          folder: options.folder, access: options.access,
+        },
+        headers,
+      });
+    },
+
+    get: (id: string): Promise<MultipartSession> => {
+      return this.request<MultipartSession>('GET', `/uploads/multipart/${id}`);
+    },
+
+    uploadPart: async (id: string, partNumber: number, chunk: Buffer | Blob): Promise<MultipartPartResult> => {
+      const body = Buffer.isBuffer(chunk) ? new Blob([chunk]) : chunk;
+      const res = await fetch(`${this.baseUrl}/api/v1/uploads/multipart/${id}/parts/${partNumber}`, {
+        method: 'PUT',
+        headers: { 'X-API-Key': this.apiKey, 'Content-Type': 'application/octet-stream' },
+        body,
+      });
+      if (!res.ok) {
+        let data: MediaOSError;
+        try { data = await res.json() as MediaOSError; } catch { data = { error: res.statusText, code: 'UNKNOWN', status: res.status }; }
+        throw new MediaOSApiError(data.error || res.statusText, data.code || 'UNKNOWN', res.status);
+      }
+      return await res.json() as MultipartPartResult;
+    },
+
+    complete: (id: string): Promise<MultipartCompleteResult> => {
+      return this.request<MultipartCompleteResult>('POST', `/uploads/multipart/${id}/complete`, {});
+    },
+
+    abort: (id: string): Promise<{ aborted: boolean; id: string }> => {
+      return this.request('POST', `/uploads/multipart/${id}/abort`, {});
+    },
+  };
+
+  get multipart() {
+    return this._multipart;
+  }
+
+  /**
+   * High-level resumable upload: start a session, upload the buffer in parts,
+   * and complete. `partSize` defaults to the server's recommendation.
+   */
+  async uploadResumable(
+    file: Buffer,
+    options: MultipartStartOptions & { partSize?: number } = {}
+  ): Promise<UploadResult> {
+    const session = await this._multipart.start({ ...options, size: file.length });
+    if (session.idempotent_replay && session.file) return session.file;
+
+    const partSize = options.partSize || session.part_size || 8 * 1024 * 1024;
+    const total = Math.max(1, Math.ceil(file.length / partSize));
+    for (let i = 0; i < total; i++) {
+      const chunk = file.subarray(i * partSize, Math.min(file.length, (i + 1) * partSize));
+      await this._multipart.uploadPart(session.id, i + 1, chunk);
+    }
+    const done = await this._multipart.complete(session.id);
+    return done.file;
   }
 
   async uploadBulk(
@@ -187,6 +309,37 @@ export class MediaOS {
         params: expiresIn ? { expires: expiresIn } : undefined,
       });
     },
+
+    srcset: (id: string, options: { widths?: number[]; mode?: string; format?: string; sizes?: string } = {}): Promise<SrcsetResult> => {
+      return this.request<SrcsetResult>('GET', `/files/${id}/srcset`, {
+        params: {
+          widths: options.widths ? options.widths.join(',') : undefined,
+          mode: options.mode,
+          format: options.format,
+          sizes: options.sizes,
+        },
+      });
+    },
+
+    purgeCache: (id: string): Promise<PurgeCacheResult> => {
+      return this.request<PurgeCacheResult>('POST', `/files/${id}/purge-cache`, {});
+    },
+  };
+
+  // ── Named variants ─────────────────────────────────
+
+  private _variants = {
+    list: (): Promise<VariantListResult> => {
+      return this.request<VariantListResult>('GET', '/variants');
+    },
+
+    create: (variant: VariantInput): Promise<Variant> => {
+      return this.request<Variant>('POST', '/variants', { body: variant });
+    },
+
+    delete: async (name: string): Promise<void> => {
+      await this.request('DELETE', `/variants/${encodeURIComponent(name)}`);
+    },
   };
 
   // ── URL Helpers (no API call) ──────────────────────
@@ -203,6 +356,36 @@ export class MediaOS {
 
   thumbnailUrl(key: string, size: number = 200): string {
     return `${this.baseUrl}/img/fit/${size}/${size}/f/${key}`;
+  }
+
+  /**
+   * URL for a named variant of a file (no API call). Pass token/expires for a
+   * signed variant of a private file; pass format to override negotiation.
+   */
+  variantUrl(key: string, variant: string, options: VariantUrlOptions = {}): string {
+    let url = `${this.baseUrl}/img/v/${encodeURIComponent(variant)}/f/${key}`;
+    const qs = new URLSearchParams();
+    if (options.format) qs.set('format', options.format);
+    if (options.token) qs.set('token', options.token);
+    if (options.expires) qs.set('expires', String(options.expires));
+    const s = qs.toString();
+    return s ? `${url}?${s}` : url;
+  }
+
+  /**
+   * Build a responsive srcset string locally from a key and a set of widths
+   * (no API call). For public files only — private files should use
+   * files.srcset() so each candidate is signed.
+   */
+  srcset(key: string, widths: number[] = [320, 640, 960, 1280, 1600], options: { mode?: string; format?: string } = {}): string {
+    const mode = options.mode || 'fit';
+    return widths
+      .map((w) => {
+        let u = `${this.baseUrl}/img/${mode}/${w}/0/f/${key}`;
+        if (options.format) u += `?format=${options.format}`;
+        return `${u} ${w}w`;
+      })
+      .join(', ');
   }
 
   // ── Usage ──────────────────────────────────────────

@@ -32,6 +32,9 @@ router.post('/api/v1/upload', auth('upload'), upload.single('file'), async (req,
       name: req.query.name || req.body.name,
       access: req.query.access || req.body.access,
       apiKeyId: req.apiKey.id,
+      // Idempotency-Key header: a repeated key returns the original file
+      // instead of storing a second copy.
+      idempotencyKey: req.headers['idempotency-key'] || req.query.idempotency_key,
     };
 
     if (invalidAccess(options.access)) {

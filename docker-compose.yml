@@ -59,10 +59,14 @@ services:
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-mvadmin}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-changeme_minio_password}
       AWS_REGION: us-east-1
-      IMGPROXY_PREFERRED_FORMATS: webp
-      IMGPROXY_ENFORCE_WEBP: "true"
+      # Allow AVIF and WebP so the worker's per-request format negotiation
+      # (Accept: image/avif -> avif, else webp) is honored. ENFORCE_WEBP would
+      # pin every output to webp and make an explicit @avif request fall back
+      # to jpeg, defeating negotiation.
+      IMGPROXY_PREFERRED_FORMATS: "avif,webp,jpeg"
       IMGPROXY_QUALITY: ${WEBP_QUALITY:-80}
       IMGPROXY_WEBP_QUALITY: ${WEBP_QUALITY:-80}
+      IMGPROXY_AVIF_QUALITY: ${AVIF_QUALITY:-63}
       IMGPROXY_MAX_SRC_RESOLUTION: 50
       IMGPROXY_CONCURRENCY: 10
       IMGPROXY_SET_CACHE_CONTROL: "public, max-age=31536000"

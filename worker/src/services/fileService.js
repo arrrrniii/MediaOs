@@ -11,8 +11,13 @@ const { trackUpload, trackDelete } = require('./usageService');
 const outboxService = require('./outboxService');
 const fileObjectService = require('./fileObjectService');
 const storageBackendService = require('./storageBackendService');
+const transformCacheService = require('./transformCacheService');
+const { generateTransform } = require('./signedUrl');
 const { addJob, QUEUES } = require('../queue');
 const config = require('../config');
+
+// Default responsive widths for srcset generation.
+const SRCSET_WIDTHS = [320, 640, 960, 1280, 1600];
 
 const ACCESS_LEVELS = ['public', 'private', 'signed'];
 const ORIGINAL_POLICIES = ['keep', 'archive', 'temporary', 'discard'];
@@ -204,8 +209,129 @@ async function verifyStoredObject(client, storageKey, expectedSize) {
   }
 }
 
+/**
+ * Idempotency: a completed prior upload with the same (project,
+ * idempotency_key) short-circuits a re-upload and returns the existing file.
+ * The key→file mapping is recorded as a 'completed' direct_uploads row, so the
+ * same table backs both normal and direct-upload idempotency.
+ */
+async function findByIdempotencyKey(projectId, key) {
+  if (!key) return null;
+  const { rows } = await query(
+    `SELECT file_id FROM direct_uploads
+     WHERE project_id = $1 AND idempotency_key = $2 AND status = 'completed' AND file_id IS NOT NULL
+     ORDER BY completed_at DESC NULLS LAST LIMIT 1`,
+    [projectId, key]
+  );
+  if (rows.length === 0 || !rows[0].file_id) return null;
+  return getFile(rows[0].file_id, { id: projectId });
+}
+
+async function recordIdempotency(projectId, key, fileId) {
+  if (!key) return;
+  await query(
+    `INSERT INTO direct_uploads (project_id, token_hash, status, idempotency_key, file_id, completed_at)
+     VALUES ($1, $2, 'completed', $3, $4, NOW())`,
+    [projectId, crypto.randomBytes(32).toString('hex'), key, fileId]
+  ).catch(() => {});
+}
+
+/**
+ * Find a live file in the same project whose SOURCE bytes match (by
+ * content_hash) and whose access level matches. Access must match so a
+ * deduped logical file — which shares the canonical file's storage_key — can
+ * never expose bytes at a different access level. Returns the CANONICAL file
+ * row (following an existing dedup_of so chains collapse to one root).
+ */
+async function findDedupTarget(projectId, contentHash, access) {
+  if (!contentHash) return null;
+  const { rows } = await query(
+    `SELECT id, project_id, storage_key, thumbnail_key, type, mime_type, size, width, height,
+            checksum, content_hash, access, dedup_of
+     FROM files
+     WHERE project_id = $1 AND content_hash = $2 AND access = $3 AND deleted_at IS NULL
+     ORDER BY (dedup_of IS NULL) DESC, created_at ASC
+     LIMIT 1`,
+    [projectId, contentHash, access]
+  );
+  if (rows.length === 0) return null;
+  const match = rows[0];
+  if (match.dedup_of) {
+    // Collapse to the root canonical file so dedup_of never points at another
+    // deduped row.
+    const { rows: root } = await query(
+      `SELECT id, project_id, storage_key, thumbnail_key, type, mime_type, size, width, height,
+              checksum, content_hash, access, dedup_of
+       FROM files WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+      [match.dedup_of]
+    );
+    if (root.length > 0) return root[0];
+  }
+  return match;
+}
+
+/**
+ * Create a deduped logical file that reuses an existing file's physical bytes.
+ * No bytes are stored and no file_objects rows are created — the new row
+ * points at the canonical storage_key and records dedup_of. Storage counters
+ * still count the logical size (the customer is billed as if they uploaded
+ * it); metadata records the bytes dedup saved.
+ */
+async function createDedupedFile({ project, target, options, originalName, originalSize, folder, access }) {
+  const slug = slugify(options.name || originalName);
+  const filename = path.basename(target.storage_key);
+  const savedBytes = parseInt(target.size, 10) || 0;
+
+  const response = await withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `INSERT INTO files (project_id, storage_key, filename, original_name, folder, type, mime_type,
+        size, original_size, width, height, status, processing_ms, access, uploaded_by,
+        checksum, content_hash, dedup_of, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'done', 0, $12, $13, $14, $15, $16, $17)
+       RETURNING *`,
+      [
+        project.id, target.storage_key, filename, originalName, folder, target.type, target.mime_type,
+        target.size, originalSize, target.width || null, target.height || null,
+        access, options.apiKeyId || null, target.checksum || null, target.content_hash || null,
+        target.id, JSON.stringify({ deduped: true, dedup_of: target.id, dedup_saved_bytes: savedBytes }),
+      ]
+    );
+    const row = rows[0];
+    const resp = formatResponse(row, project.id, []);
+    resp.deduped = true;
+    resp.dedup_of = target.id;
+    await outboxService.emitEvent(client, {
+      aggregateType: 'file', aggregateId: row.id, eventType: 'file.uploaded', payload: resp,
+    });
+    return resp;
+  });
+
+  // Bill the logical size even though no new bytes were stored.
+  await updateProjectCounters(project.id, savedBytes);
+  trackUpload(project.id, savedBytes).catch(() => {});
+  return response;
+}
+
+/**
+ * Public entry point: handles idempotency (return an existing file for a
+ * repeated key) and records the key→file mapping after a successful upload,
+ * then delegates the actual storage/processing to _uploadFileImpl.
+ */
 async function uploadFile(file, project, options = {}, queue = null) {
+  if (options.idempotencyKey) {
+    const existing = await findByIdempotencyKey(project.id, options.idempotencyKey);
+    if (existing) return { ...existing, idempotent_replay: true };
+  }
+  const result = await _uploadFileImpl(file, project, options, queue);
+  if (options.idempotencyKey && result && result.id) {
+    await recordIdempotency(project.id, options.idempotencyKey, result.id);
+  }
+  return result;
+}
+
+async function _uploadFileImpl(file, project, options = {}, queue = null) {
   const start = Date.now();
+
   const access = resolveAccess(options, project);
   const slug = slugify(options.name || file.originalname);
   const folder = sanitizeFolder(options.folder);
@@ -217,6 +343,20 @@ async function uploadFile(file, project, options = {}, queue = null) {
 
   assertWithinSizeLimit(project, buffer.length);
   assertTypeAllowed(project, detected.category);
+
+  // Content dedup — non-video only (video is stored async and owned by the
+  // Phase-8b pipeline). If another live file in this project already holds the
+  // same source bytes at the same access level, reuse its physical objects.
+  if (detected.category !== 'video') {
+    const contentHash = sha256(buffer);
+    const target = await findDedupTarget(project.id, contentHash, access);
+    if (target) {
+      return createDedupedFile({
+        project, target, options, originalName: file.originalname,
+        originalSize, folder, access,
+      });
+    }
+  }
 
   const backend = await storageBackendService.getDefaultBackend();
   const client = storageBackendService.getBackendClient(backend);
@@ -289,6 +429,10 @@ async function uploadFile(file, project, options = {}, queue = null) {
       maxWidth: project.settings?.max_width || config.maxWidth,
       maxHeight: project.settings?.max_height || config.maxHeight,
       quality: project.settings?.webp_quality || config.webpQuality,
+      // Strip EXIF/metadata from the optimized output unless the project's
+      // original-preservation policy asks to keep it. The preserved SOURCE
+      // object (below) always retains its metadata.
+      preserveMetadata: policy.preserveMetadata,
     });
 
     const sourceChecksum = sha256(buffer);
@@ -339,6 +483,7 @@ async function uploadFile(file, project, options = {}, queue = null) {
         projectId: project.id, storageKey, filename: path.basename(storageKey),
         originalName: file.originalname, folder, type: 'image', mimeType: 'image/webp',
         size: result.size, originalSize, width: result.width, checksum: canonicalChecksum,
+        contentHash: sourceChecksum,
         height: result.height, status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
         retentionUntil,
       },
@@ -536,18 +681,22 @@ function sumObjectBytes(objects) {
 
 async function insertFileRecord(data, client = null) {
   const exec = client ? (text, params) => client.query(text, params) : query;
+  // content_hash is the checksum of the SOURCE bytes (the dedup key); it may
+  // equal files.checksum, or differ when the source is discarded and checksum
+  // becomes the optimized rendition's hash.
+  const contentHash = data.contentHash || data.checksum || null;
   const { rows } = await exec(
     `INSERT INTO files (project_id, storage_key, filename, original_name, folder, type, mime_type,
      size, original_size, width, height, duration, thumbnail_key, status, processing_ms, access,
-     uploaded_by, checksum, retention_until)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+     uploaded_by, checksum, retention_until, content_hash, dedup_of)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
      RETURNING *`,
     [
       data.projectId, data.storageKey, data.filename, data.originalName, data.folder,
       data.type, data.mimeType, data.size, data.originalSize, data.width || null,
       data.height || null, data.duration || null, data.thumbnailKey || null,
       data.status, data.processingMs, data.access, data.uploadedBy || null,
-      data.checksum || null, data.retentionUntil || null,
+      data.checksum || null, data.retentionUntil || null, contentHash, data.dedupOf || null,
     ]
   );
   return rows[0];
@@ -618,13 +767,10 @@ async function deleteFile(fileId, project) {
 
   const file = rows[0];
 
-  // Gather every physical object so we can remove all copies, not just the
-  // legacy canonical key. Older rows (pre-backfill) have no objects; fall
-  // back to the legacy storage_key/thumbnail_key.
-  let objects = [];
-  try {
-    objects = await fileObjectService.listObjects(fileId);
-  } catch { /* fall back to legacy keys below */ }
+  // The physical bytes for a deduped file live under its canonical file's
+  // storage keys. Reference-safe delete: bytes are only removed once no live
+  // file still references the canonical object set.
+  const canonicalId = file.dedup_of || file.id;
 
   // Soft delete + emit file.deleted atomically: the tombstone and the event
   // commit together, so a crash can neither drop the event for a completed
@@ -643,21 +789,59 @@ async function deleteFile(fileId, project) {
     });
   });
 
-  let freedBytes;
-  if (objects.length > 0) {
-    freedBytes = objects.reduce((t, o) => t + (parseInt(o.size, 10) || 0), 0);
-    for (const o of objects) {
-      const backend = await storageBackendService.getBackendById(o.storage_backend_id);
-      const client = storageBackendService.getBackendClient(backend);
-      client.removeObject(o.storage_key).catch(() => {});
+  // After the tombstone commits, count files still referencing the canonical
+  // bytes (the canonical row itself, or any dedup pointing at it). Zero means
+  // this delete freed the last reference and the physical objects can go.
+  const { rows: refRows } = await query(
+    `SELECT COUNT(*)::int AS n FROM files
+     WHERE deleted_at IS NULL AND (id = $1 OR dedup_of = $1)`,
+    [canonicalId]
+  );
+  const liveRefs = refRows[0] ? refRows[0].n : 0;
+
+  // Logical decrement mirrors the logical size billed on upload.
+  let freedBytes = parseInt(file.size, 10) || 0;
+
+  if (liveRefs === 0) {
+    // Safe to remove the canonical's physical objects — this file is either
+    // the canonical itself or the last dependent still standing.
+    let objects = [];
+    try {
+      objects = await fileObjectService.listObjects(canonicalId);
+    } catch { /* fall back to legacy keys below */ }
+
+    if (objects.length > 0) {
+      // When deleting a canonical file directly, prefer the physical object
+      // sum for the counter (preserves the pre-dedup accounting).
+      if (!file.dedup_of) {
+        freedBytes = objects.reduce((t, o) => t + (parseInt(o.size, 10) || 0), 0);
+      }
+      for (const o of objects) {
+        const backend = await storageBackendService.getBackendById(o.storage_backend_id);
+        const client = storageBackendService.getBackendClient(backend);
+        client.removeObject(o.storage_key).catch(() => {});
+      }
+    } else {
+      // Legacy fallback: remove by the canonical file's storage_key.
+      let canonicalKey = file.storage_key;
+      let canonicalThumb = file.thumbnail_key;
+      if (canonicalId !== file.id) {
+        const { rows: cr } = await query(
+          'SELECT storage_key, thumbnail_key FROM files WHERE id = $1',
+          [canonicalId]
+        );
+        if (cr.length > 0) {
+          canonicalKey = cr[0].storage_key;
+          canonicalThumb = cr[0].thumbnail_key;
+        }
+      }
+      const client = storageBackendService.getBackendClient(await storageBackendService.getDefaultBackend());
+      if (canonicalKey) client.removeObject(canonicalKey).catch(() => {});
+      if (canonicalThumb) client.removeObject(canonicalThumb).catch(() => {});
     }
-  } else {
-    freedBytes = file.size;
-    const client = storageBackendService.getBackendClient(await storageBackendService.getDefaultBackend());
-    client.removeObject(file.storage_key).catch(() => {});
-    if (file.thumbnail_key) {
-      client.removeObject(file.thumbnail_key).catch(() => {});
-    }
+
+    // Cached transforms belong to the canonical file; purge them too.
+    transformCacheService.purge(canonicalId, project.id).catch(() => {});
   }
 
   // Decrement counters
@@ -765,16 +949,76 @@ async function getFile(fileId, project) {
   return formatResponse(rows[0], project.id, objects);
 }
 
+/**
+ * Build a responsive srcset for an image file. Public files get plain /img
+ * URLs; private/signed files get per-width SIGNED transform URLs so each
+ * candidate is independently fetchable. Returns { widths, sizes, srcset, urls }.
+ * `project` must include signing_secret for signed URLs.
+ */
+function buildSrcset(project, file, options = {}) {
+  const widths = Array.isArray(options.widths) && options.widths.length
+    ? options.widths.filter((w) => Number.isInteger(w) && w > 0 && w <= 8192)
+    : SRCSET_WIDTHS;
+  const mode = options.mode || 'fit';
+  const format = options.format || 'auto';
+  const sizes = options.sizes || '100vw';
+  const isPublic = file.access === 'public';
+  const expiresIn = Math.min(86400, Math.max(60, parseInt(options.expiresIn, 10) || 3600));
+
+  const entries = widths.map((w) => {
+    let url;
+    if (isPublic) {
+      url = `${config.publicUrl}/img/${mode}/${w}/0/f/${file.storage_key}`;
+      if (format && format !== 'auto') url += `?format=${format}`;
+    } else {
+      const signed = generateTransform(
+        project, file.storage_key, { mode, width: w, height: 0, format: format === 'auto' ? 'webp' : format }, expiresIn
+      );
+      url = signed.url;
+    }
+    return { width: w, url };
+  });
+
+  const srcset = entries.map((e) => `${e.url} ${e.width}w`).join(', ');
+  return { widths, sizes, srcset, urls: entries };
+}
+
+/**
+ * Fetch a file and build its srcset. Returns null when the file is missing or
+ * is not an image.
+ */
+async function getSrcset(fileId, project, options = {}) {
+  const { rows } = await query(
+    'SELECT * FROM files WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL',
+    [fileId, project.id]
+  );
+  if (rows.length === 0) return null;
+  if (rows[0].type !== 'image') {
+    const err = new Error('srcset is only available for images');
+    err.status = 400;
+    err.code = 'INVALID_FILE_TYPE';
+    throw err;
+  }
+  return buildSrcset(project, rows[0], options);
+}
+
 module.exports = {
   uploadFile,
   deleteFile,
   listFiles,
   getFile,
+  getSrcset,
+  buildSrcset,
   ACCESS_LEVELS,
+  SRCSET_WIDTHS,
   // Exported for the BullMQ media processor, which reuses these rather than
   // duplicating rendition bookkeeping.
   formatResponse,
   recordObject,
   updateProjectCounters,
   sha256File,
+  // Exported for the direct/multipart upload routes, which reuse the same
+  // idempotency bookkeeping as the normal upload path.
+  findByIdempotencyKey,
+  recordIdempotency,
 };

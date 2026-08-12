@@ -139,6 +139,15 @@ jest.mock('../src/minio', () => ({
   }),
   statObject: jest.fn(async (key) => {
     const obj = mockMinio.objects[key];
+    // Real object stores throw for a missing key; mirror that so code paths
+    // that probe existence (e.g. the transform cache) behave realistically.
+    // Unknown keys still resolve for the many callers that never store first,
+    // UNLESS the key is a transform-cache probe (_cache/...).
+    if (!obj && String(key).startsWith('_cache/')) {
+      const err = new Error('NoSuchKey');
+      err.code = 'NoSuchKey';
+      throw err;
+    }
     return { size: obj ? obj.size : 1000, metaData: {} };
   }),
   removeObject: jest.fn(async (key) => {
@@ -197,6 +206,8 @@ jest.mock('sharp', () => {
       pages: 1,
     })),
     resize: jest.fn().mockReturnThis(),
+    rotate: jest.fn().mockReturnThis(),
+    withMetadata: jest.fn().mockReturnThis(),
     webp: jest.fn().mockReturnThis(),
     toBuffer: jest.fn(async () => ({
       data: Buffer.from('webp-data'),

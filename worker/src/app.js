@@ -8,6 +8,8 @@ const accountRoutes = require('./routes/accounts');
 const projectRoutes = require('./routes/projects');
 const apiKeyRoutes = require('./routes/apiKeys');
 const uploadRoutes = require('./routes/upload');
+const uploadsRoutes = require('./routes/uploads');
+const deliveryRoutes = require('./routes/delivery');
 const fileRoutes = require('./routes/files');
 const serveRoutes = require('./routes/serve');
 const webhookRoutes = require('./routes/webhooks');
@@ -81,9 +83,15 @@ function createApp() {
   app.use(lifecycleRoutes);
   app.use(backendRoutes);
 
+  // Delivery management (variants CRUD, purge-cache, srcset): session-scoped
+  // routes mount alongside the other customer routes; the file carries the
+  // API-key variants too.
+  app.use(deliveryRoutes);
+
   // File routes (API key auth; the per-key rate limit runs inside auth(),
   // which is the first point at which the key — and its limit — is known)
   app.use(uploadRoutes);
+  app.use(uploadsRoutes);
   app.use(fileRoutes);
 
   // Webhook & usage routes (API key auth)

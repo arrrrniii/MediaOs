@@ -41,6 +41,20 @@ export interface ProjectSettings {
   max_width: number;
   max_height: number;
   default_access: 'public' | 'private';
+  /** When true, only named variants may be delivered (arbitrary /img denied). */
+  strict_transforms?: boolean;
+}
+
+export interface NamedVariant {
+  id?: string;
+  project_id?: string;
+  name: string;
+  mode: 'fit' | 'fill' | 'auto' | 'force';
+  width: number;
+  height: number;
+  format: 'auto' | 'webp' | 'avif' | 'jpeg' | 'png';
+  quality: number | null;
+  builtin?: boolean;
 }
 
 export interface ApiKey {

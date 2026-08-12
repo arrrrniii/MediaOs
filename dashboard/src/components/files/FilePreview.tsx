@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { FileRecord } from '@/lib/types';
 import { formatBytes, formatDate } from '@/lib/utils';
@@ -59,6 +59,33 @@ export default function FilePreview({
   onDelete: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
+  const [srcset, setSrcset] = useState<string | null>(null);
+  const isImage = file.type === 'image';
+
+  // The /img base is the /f URL with the file path stripped off.
+  const imgBase = file.url ? file.url.replace(`/f/${file.storage_key}`, '') : '';
+  const variantUrl = (name: string) => `${imgBase}/img/v/${name}/f/${file.storage_key}`;
+  const VARIANTS = ['thumbnail', 'card', 'hero'];
+
+  useEffect(() => {
+    if (!isImage) return;
+    let cancelled = false;
+    fetch(`/api/projects/${file.project_id}/files/${file.id}/srcset`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d?.srcset) setSrcset(d.srcset); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [file.id, file.project_id, file.storage_key, isImage]);
+
+  async function purgeCache() {
+    try {
+      const res = await fetch(`/api/projects/${file.project_id}/files/${file.id}/purge-cache`, { method: 'POST' });
+      if (res.ok) toast.success('Transform cache purged');
+      else toast.error('Failed to purge cache');
+    } catch {
+      toast.error('Failed to purge cache');
+    }
+  }
 
   async function handleDelete() {
     setDeleting(true);
@@ -79,8 +106,6 @@ export default function FilePreview({
       setDeleting(false);
     }
   }
-
-  const isImage = file.type === 'image';
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -173,6 +198,25 @@ export default function FilePreview({
                   <CopyRow key={key} text={url} label={`${key} URL`} />
                 ))}
             </div>
+
+            {/* Named variants + srcset (images only) */}
+            {isImage && imgBase && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">Variants &amp; srcset</p>
+                  <button
+                    onClick={purgeCache}
+                    className="text-[11px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                  >
+                    Purge cache
+                  </button>
+                </div>
+                {VARIANTS.map((v) => (
+                  <CopyRow key={v} text={variantUrl(v)} label={`${v} variant`} />
+                ))}
+                {srcset && <CopyRow text={srcset} label="srcset" />}
+              </div>
+            )}
 
             {/* Actions */}
             <div className="mt-auto flex gap-2 border-t border-border/50 pt-4">

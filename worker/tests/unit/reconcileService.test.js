@@ -344,6 +344,26 @@ describe('checkOrphanObjects', () => {
     expect(r.issuesFound).toBe(0);
     expect(client.removeObject).not.toHaveBeenCalled();
   });
+
+  it('never reaps system-managed _cache/ and _multipart/ objects', async () => {
+    const old = new Date(Date.now() - 48 * 60 * 60 * 1000); // old enough to delete
+    minio.minioClient.listObjectsV2.mockReturnValue(
+      listStreamOf([
+        { name: '_cache/v1/file-1/r_fit_200x200.webp', lastModified: old, size: 10 },
+        { name: '_multipart/sess-1/1', lastModified: old, size: 10 },
+      ])
+    );
+    mockDb.onQuery('SELECT value FROM lifecycle_kv', { rows: [] });
+    mockDb.onQuery('INSERT INTO lifecycle_kv', { rowCount: 1 });
+    storageBackendService.getDefaultBackend.mockResolvedValue({ id: 'b1' });
+    const client = makeClient();
+    storageBackendService.getBackendClient.mockReturnValue(client);
+
+    const r = await reconcile.checkOrphanObjects(RUN_ID);
+    // Both are excluded before the DB check, so nothing is examined or deleted.
+    expect(r.checked).toBe(0);
+    expect(client.removeObject).not.toHaveBeenCalled();
+  });
 });
 
 // ── expired_temp_uploads ────────────────────────────────

@@ -7,7 +7,117 @@ export interface MediaOSConfig {
 export interface UploadOptions {
   folder?: string;
   name?: string;
-  access?: 'public' | 'private';
+  access?: 'public' | 'private' | 'signed';
+  /** Repeating an upload with the same key returns the original file. */
+  idempotencyKey?: string;
+}
+
+export type VariantMode = 'fit' | 'fill' | 'auto' | 'force';
+export type VariantFormat = 'auto' | 'webp' | 'avif' | 'jpeg' | 'png';
+
+export interface VariantInput {
+  name: string;
+  mode: VariantMode;
+  width: number;
+  height: number;
+  format?: VariantFormat;
+  quality?: number | null;
+}
+
+export interface Variant extends VariantInput {
+  id?: string;
+  project_id?: string;
+  quality: number | null;
+  format: VariantFormat;
+  builtin?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface VariantListResult {
+  data: Variant[];
+  builtins: Variant[];
+}
+
+export interface VariantUrlOptions {
+  format?: VariantFormat;
+  token?: string;
+  expires?: number;
+}
+
+export interface SrcsetResult {
+  widths: number[];
+  sizes: string;
+  srcset: string;
+  urls: Array<{ width: number; url: string }>;
+}
+
+export interface DirectUploadGrant {
+  id: string;
+  upload_url: string;
+  method: 'PUT';
+  max_bytes: number | null;
+  content_type: string | null;
+  access: string | null;
+  folder: string | null;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface DirectUploadOptions {
+  contentType?: string;
+  content_type?: string;
+  maxBytes?: number;
+  max_bytes?: number;
+  access?: 'public' | 'private' | 'signed';
+  folder?: string;
+  idempotencyKey?: string;
+  expiresIn?: number;
+}
+
+export interface MultipartStartOptions {
+  filename?: string;
+  size?: number;
+  contentType?: string;
+  folder?: string;
+  access?: 'public' | 'private' | 'signed';
+  idempotencyKey?: string;
+}
+
+export interface MultipartSession {
+  id: string;
+  project_id?: string;
+  filename?: string;
+  content_type?: string | null;
+  access?: string | null;
+  folder?: string | null;
+  status: 'active' | 'completed' | 'aborted' | 'expired';
+  total_bytes: number | null;
+  received_bytes: number;
+  parts: Array<{ part_number: number; size: number }>;
+  part_size: number;
+  file_id: string | null;
+  created_at?: string;
+  expires_at?: string;
+  idempotent_replay?: boolean;
+  file?: UploadResult;
+}
+
+export interface MultipartPartResult {
+  part_number: number;
+  size: number;
+  received_bytes: number;
+}
+
+export interface MultipartCompleteResult {
+  file: UploadResult;
+  already_completed?: boolean;
+}
+
+export interface PurgeCacheResult {
+  cache_version: number | null;
+  objects_removed: number;
+  purged: boolean;
 }
 
 export interface FileListOptions {

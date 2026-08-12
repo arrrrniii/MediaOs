@@ -1,13 +1,28 @@
 const { Router } = require('express');
 const { query } = require('../db');
-const { validateOriginal, validateTransform } = require('../services/signedUrl');
+const { validateOriginal, validateTransform, validateVariant } = require('../services/signedUrl');
 const { trackDownload, trackTransform, trackBandwidth } = require('../services/usageService');
 const { recordAccess } = require('../services/accessTrackingService');
 const fileObjectService = require('../services/fileObjectService');
 const storageBackendService = require('../services/storageBackendService');
+const transformCacheService = require('../services/transformCacheService');
+const variantService = require('../services/variantService');
 const lifecycleService = require('../services/lifecycleService');
 const { addJob, QUEUES, isEnabled } = require('../queue');
 const config = require('../config');
+
+/**
+ * Whether a project restricts image delivery to named variants only. Settings
+ * may arrive as a parsed object or a JSON string; both are tolerated. Default
+ * false preserves the open /img/:mode/:w/:h behavior.
+ */
+function isStrictTransforms(settings) {
+  let s = settings;
+  if (typeof s === 'string') {
+    try { s = JSON.parse(s); } catch { return false; }
+  }
+  return !!(s && s.strict_transforms === true);
+}
 
 const router = Router();
 
@@ -286,6 +301,113 @@ router.get('/f/:projectId/*', async (req, res, next) => {
   }
 });
 
+/**
+ * Pick the concrete output format for a transform request.
+ *   - An explicit non-'auto' request format wins (already validated).
+ *   - Else a non-'auto' variant format wins.
+ *   - Else negotiate: AVIF when the client advertises image/avif, else WebP.
+ * Always returns one of TRANSFORM_FORMATS (never 'auto').
+ */
+function negotiateFormat({ requestedFormat, variantFormat, accept }) {
+  if (requestedFormat && requestedFormat !== 'auto' && TRANSFORM_FORMATS.includes(requestedFormat)) {
+    return requestedFormat;
+  }
+  if (variantFormat && variantFormat !== 'auto' && TRANSFORM_FORMATS.includes(variantFormat)) {
+    return variantFormat;
+  }
+  if (typeof accept === 'string' && accept.includes('image/avif')) return 'avif';
+  return 'webp';
+}
+
+function buildImgproxyUrl(storageKey, { mode, w, h, format, quality }) {
+  const q = Number.isInteger(quality) && quality >= 1 && quality <= 100 ? `/quality:${quality}` : '';
+  const path = `/insecure/resize:${mode}:${w}:${h}${q}/plain/s3://${config.bucket}/${storageKey}@${format}`;
+  return `${config.imgproxyUrl}${path}`;
+}
+
+/**
+ * Render a transform through imgproxy and serve it, using the persistent cache
+ * for public files. `spec` = { mode, w, h, format, quality, variantKey }.
+ * `fileRow` (when present) supplies id/project_id/cache_version for cache keys
+ * and usage tracking. Private/signed transforms are never persisted to the
+ * shared cache.
+ */
+async function renderAndServe(req, res, { storageKey, access, spec, fileRow }) {
+  const isPublic = isPublicAccess(access);
+  const contentType = `image/${spec.format}`;
+
+  // Cache lookup — public files only. A hit streams stored bytes and skips
+  // imgproxy entirely.
+  if (isPublic && fileRow && fileRow.id) {
+    const hit = await transformCacheService.lookup(
+      fileRow.id, fileRow.cache_version || 1, spec.variantKey, spec.format
+    );
+    if (hit) {
+      res.set('Content-Type', contentType);
+      setCacheHeaders(res, access);
+      setContentSafetyHeaders(res, { mimeType: contentType, type: 'image' });
+      res.set('X-Transform-Cache', 'HIT');
+      if (hit.stat && hit.stat.etag) res.set('ETag', hit.stat.etag);
+      if (hit.stat && typeof hit.stat.size === 'number') res.set('Content-Length', hit.stat.size);
+      const stream = await hit.client.getObject(hit.key);
+      stream.pipe(res);
+      const bytes = (hit.stat && hit.stat.size) || 0;
+      trackTransform(fileRow.project_id).catch(() => {});
+      trackBandwidth(fileRow.project_id, fileRow.id, bytes, true);
+      recordAccess(fileRow.id, 'transform');
+      return;
+    }
+  }
+
+  // Render via imgproxy.
+  const imgproxyUrl = buildImgproxyUrl(storageKey, spec);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let response;
+  try {
+    response = await fetch(imgproxyUrl, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    return res.status(response.status).json({
+      error: 'Image processing failed',
+      code: 'IMGPROXY_ERROR',
+    });
+  }
+
+  const upstreamType = response.headers.get('content-type') || contentType;
+  const body = Buffer.from(await response.arrayBuffer());
+
+  res.set('Content-Type', upstreamType);
+  setCacheHeaders(res, access);
+  setContentSafetyHeaders(res, { mimeType: upstreamType, type: 'image' });
+  res.set('Content-Length', body.length);
+  res.set('X-Transform-Cache', isPublic ? 'MISS' : 'BYPASS');
+  res.end(body);
+
+  // Store to the shared cache for public files only (best-effort, after the
+  // response is already sent).
+  if (isPublic && fileRow && fileRow.id) {
+    transformCacheService.store({
+      projectId: fileRow.project_id,
+      fileId: fileRow.id,
+      cacheVersion: fileRow.cache_version || 1,
+      variantKey: spec.variantKey,
+      format: spec.format,
+      buffer: body,
+      contentType: upstreamType,
+    }).catch(() => {});
+  }
+
+  if (fileRow && fileRow.id) {
+    trackTransform(fileRow.project_id).catch(() => {});
+    trackBandwidth(fileRow.project_id, fileRow.id, body.length, true);
+    recordAccess(fileRow.id, 'transform');
+  }
+}
+
 // GET /img/:type/:width/:height/f/:projectId/* — serve resized image via imgproxy
 router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) => {
   try {
@@ -327,23 +449,37 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
 
     // Validate the optional output format
     const requestedFormat = req.query.format;
-    if (requestedFormat !== undefined && !TRANSFORM_FORMATS.includes(requestedFormat)) {
+    if (requestedFormat !== undefined && !TRANSFORM_FORMATS.includes(requestedFormat) && requestedFormat !== 'auto') {
       return res.status(400).json({
         error: `Invalid format. Use: ${TRANSFORM_FORMATS.join(', ')}`,
         code: 'INVALID_FORMAT',
       });
     }
 
-    // Check file access level
+    // Check file access level + settings (for strict_transforms) + cache version
     const { rows: fileRows } = await query(
-      'SELECT f.access, f.id, f.project_id, p.signing_secret FROM files f JOIN projects p ON f.project_id = p.id WHERE f.storage_key = $1 AND f.deleted_at IS NULL',
+      'SELECT f.access, f.id, f.project_id, p.signing_secret, f.cache_version, p.settings AS project_settings FROM files f JOIN projects p ON f.project_id = p.id WHERE f.storage_key = $1 AND f.deleted_at IS NULL',
       [storageKey]
     );
 
+    const fileRow = fileRows[0] || null;
     // An unknown key is not known to be public, so it gets the private headers.
-    const access = fileRows.length > 0 ? fileRows[0].access : null;
+    const access = fileRow ? fileRow.access : null;
 
-    if (fileRows.length > 0 && (access === 'private' || access === 'signed')) {
+    // Strict transforms: when a project opts in, arbitrary /img/:mode/:w/:h
+    // combos are refused — only named variants may be delivered. Default off
+    // keeps the current open behavior for back-compat.
+    if (fileRow && isStrictTransforms(fileRow.project_settings)) {
+      return res.status(403).json({
+        error: 'This project only allows named variants. Use /img/v/:variant/...',
+        code: 'STRICT_TRANSFORMS',
+      });
+    }
+
+    // Negotiate the concrete output format (AVIF/WebP) for signing + rendering.
+    const format = negotiateFormat({ requestedFormat, accept: req.headers['accept'] });
+
+    if (fileRow && (access === 'private' || access === 'signed')) {
       const token = req.query.token;
       const expires = req.query.expires;
 
@@ -354,8 +490,13 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
         });
       }
 
-      const format = requestedFormat || 'webp';
-      if (!validateTransform(fileRows[0].signing_secret, storageKey, { mode: type, width, height, format }, token, expires)) {
+      // A signed transform URL is signed with the format the caller baked in.
+      // When that was 'auto' (or omitted), validate against the negotiated
+      // format so the same signature covers whichever of avif/webp we serve.
+      const signedFmt = requestedFormat || 'webp';
+      const okExplicit = validateTransform(fileRow.signing_secret, storageKey, { mode: type, width, height, format: signedFmt }, token, expires);
+      const okNegotiated = validateTransform(fileRow.signing_secret, storageKey, { mode: type, width, height, format }, token, expires);
+      if (!okExplicit && !okNegotiated) {
         const isExpired = parseInt(expires) < Math.floor(Date.now() / 1000);
         return res.status(403).json({
           error: isExpired ? 'Signed URL has expired' : 'Invalid signature',
@@ -364,56 +505,91 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
       }
     }
 
-    // Proxy to imgproxy
-    const extension = requestedFormat ? `@${requestedFormat}` : '';
-    const imgproxyPath = `/insecure/resize:${type}:${w}:${h}/plain/s3://${config.bucket}/${storageKey}${extension}`;
-    const imgproxyUrl = `${config.imgproxyUrl}${imgproxyPath}`;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-
-    const response = await fetch(imgproxyUrl, {
-      signal: controller.signal,
+    const variantKey = transformCacheService.rawVariantKey(type, w, h);
+    await renderAndServe(req, res, {
+      storageKey, access,
+      spec: { mode: type, w, h, format, quality: undefined, variantKey },
+      fileRow,
     });
-    clearTimeout(timeout);
+  } catch (err) {
+    next(err);
+  }
+});
 
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: 'Image processing failed',
-        code: 'IMGPROXY_ERROR',
+// GET /img/v/:variant/f/:projectId/* — serve a named variant via imgproxy
+router.get('/img/v/:variant/f/:projectId/*', async (req, res, next) => {
+  try {
+    const { variant, projectId } = req.params;
+    const remainder = req.params[0];
+    const storageKey = `${projectId}/${remainder}`;
+
+    // Look up file + project (for the variant resolution + signing).
+    const { rows: fileRows } = await query(
+      'SELECT f.access, f.id, f.project_id, f.cache_version, p.signing_secret FROM files f JOIN projects p ON f.project_id = p.id WHERE f.storage_key = $1 AND f.deleted_at IS NULL',
+      [storageKey]
+    );
+    const fileRow = fileRows[0] || null;
+    const access = fileRow ? fileRow.access : null;
+
+    // Resolve the variant against the file's project (stored, else built-in).
+    // Unknown files still resolve built-ins so serving does not depend on a DB
+    // row existing, but access defaults to private for anything unrecognized.
+    const resolved = await variantService.resolveVariant(
+      fileRow ? fileRow.project_id : projectId, variant
+    );
+    if (!resolved) {
+      return res.status(404).json({
+        error: `Unknown variant "${variant}"`,
+        code: 'UNKNOWN_VARIANT',
       });
     }
 
-    // Forward headers
-    const contentType = response.headers.get('content-type') || 'image/webp';
-    res.set('Content-Type', contentType);
-    setCacheHeaders(res, access);
-    setContentSafetyHeaders(res, { mimeType: contentType, type: 'image' });
-
-    const contentLength = response.headers.get('content-length');
-    if (contentLength) {
-      res.set('Content-Length', contentLength);
+    // Optional per-request format override, validated against the format list.
+    const requestedFormat = req.query.format;
+    if (requestedFormat !== undefined && !TRANSFORM_FORMATS.includes(requestedFormat) && requestedFormat !== 'auto') {
+      return res.status(400).json({
+        error: `Invalid format. Use: ${TRANSFORM_FORMATS.join(', ')}`,
+        code: 'INVALID_FORMAT',
+      });
     }
 
-    // Stream response
-    const reader = response.body.getReader();
-    const pump = async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(value);
+    const format = negotiateFormat({
+      requestedFormat,
+      variantFormat: resolved.format,
+      accept: req.headers['accept'],
+    });
+
+    if (fileRow && (access === 'private' || access === 'signed')) {
+      const token = req.query.token;
+      const expires = req.query.expires;
+      if (!token || !expires) {
+        return res.status(403).json({
+          error: 'Access denied. This file requires a signed URL.',
+          code: 'ACCESS_DENIED',
+        });
       }
-      res.end();
-    };
-    await pump();
-
-    // Track transform usage (fire-and-forget)
-    if (fileRows.length > 0) {
-      const bytesServed = parseInt(contentLength) || 0;
-      trackTransform(fileRows[0].project_id).catch(() => {});
-      trackBandwidth(fileRows[0].project_id, fileRows[0].id, bytesServed, true);
-      recordAccess(fileRows[0].id, 'transform');
+      // Accept a signature over the negotiated format or over 'auto' (so a URL
+      // signed before negotiation still validates whichever variant we serve).
+      const okAuto = validateVariant(fileRow.signing_secret, storageKey, { variant, format: 'auto' }, token, expires);
+      const okFmt = validateVariant(fileRow.signing_secret, storageKey, { variant, format }, token, expires);
+      if (!okAuto && !okFmt) {
+        const isExpired = parseInt(expires) < Math.floor(Date.now() / 1000);
+        return res.status(403).json({
+          error: isExpired ? 'Signed URL has expired' : 'Invalid signature',
+          code: isExpired ? 'URL_EXPIRED' : 'INVALID_SIGNATURE',
+        });
+      }
     }
+
+    const variantKey = transformCacheService.namedVariantKey(resolved.name);
+    await renderAndServe(req, res, {
+      storageKey, access,
+      spec: {
+        mode: resolved.mode, w: resolved.width, h: resolved.height,
+        format, quality: resolved.quality || undefined, variantKey,
+      },
+      fileRow,
+    });
   } catch (err) {
     next(err);
   }
