@@ -92,8 +92,23 @@ wait_health() {
 }
 
 # ── commands ────────────────────────────────────────────────
+# Refresh this CLI itself from the repo. Safe to run mid-session: we write to a
+# temp file, validate it, then atomically replace the installed script.
+cmd_self_update() {
+  local target tmp
+  target="$(command -v mediaos || echo /usr/local/bin/mediaos)"
+  tmp="$(mktemp)"
+  log "Updating the mediaos CLI ($target)"
+  curl -fsSL "${RAW_BASE}/scripts/mediaos" -o "$tmp" || { warn "could not fetch the CLI; keeping the current one"; rm -f "$tmp"; return 0; }
+  grep -q "mediaos — operator CLI" "$tmp" || { warn "downloaded CLI looks wrong; keeping current"; rm -f "$tmp"; return 0; }
+  chmod +x "$tmp"
+  if cmp -s "$tmp" "$target"; then rm -f "$tmp"; ok "  CLI already up to date"; else mv "$tmp" "$target"; ok "  CLI updated"; fi
+}
+
 cmd_update() {
   log "MediaOS update"
+  # Keep the CLI current too (best-effort; never blocks the app update).
+  cmd_self_update || true
   do_backup
   log "Fetching the latest compose (${RAW_BASE}/docker-compose.hub.yml -> ${COMPOSE_FILE})"
   local tmp; tmp="$(mktemp)"
@@ -155,6 +170,7 @@ mediaos — operator CLI  (dir: ${MEDIAOS_DIR}, compose: ${COMPOSE_FILE})
   mediaos restart     Restart the stack
   mediaos start|stop  Start / stop the stack
   mediaos rollback    Restore the last compose backup and restart
+  mediaos self-update Update the mediaos CLI itself from the repo
 EOF
 }
 
@@ -168,6 +184,7 @@ case "${1:-}" in
   start)    cmd_start ;;
   stop)     cmd_stop ;;
   rollback) cmd_rollback ;;
+  self-update|selfupdate) cmd_self_update ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command '$1' (try: mediaos help)" ;;
 esac
