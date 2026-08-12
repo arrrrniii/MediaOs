@@ -1,20 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { adminFetch } from '@/lib/api';
+import { getAccountContext } from '@/lib/session';
+import { accountFetch } from '@/lib/api';
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session) {
+  const ctx = await getAccountContext();
+  if (!ctx) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const { id } = await params;
   try {
-    const result = await adminFetch(`/api/v1/projects/${id}/keys`);
+    const result = await accountFetch(ctx, `/api/v1/projects/${id}/keys`);
     return NextResponse.json(result);
   } catch {
     return NextResponse.json({ data: [] });
@@ -25,8 +24,8 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session) {
+  const ctx = await getAccountContext();
+  if (!ctx) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -34,7 +33,7 @@ export async function POST(
   const body = await req.json();
 
   try {
-    const result = await adminFetch(`/api/v1/projects/${id}/keys`, {
+    const result = await accountFetch(ctx, `/api/v1/projects/${id}/keys`, {
       method: 'POST',
       body: JSON.stringify(body),
     });

@@ -1,6 +1,18 @@
 import type { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
-import { publicFetch } from './api';
+import { internalFetch } from './api';
+import type { AccountMembership } from './types';
+
+interface LoginResponse {
+  user: { id: string; name: string; email: string };
+  accounts: AccountMembership[];
+}
+
+// The account a user lands in by default: one they own if there is one,
+// otherwise the first membership the worker returned.
+function pickActiveAccount(accounts: AccountMembership[]): AccountMembership | undefined {
+  return accounts.find((a) => a.role === 'owner') || accounts[0];
+}
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -14,13 +26,7 @@ export const authOptions: NextAuthOptions = {
         if (!credentials?.email || !credentials?.password) return null;
 
         try {
-          const account = await publicFetch<{
-            id: string;
-            name: string;
-            email: string;
-            plan: string;
-            status: string;
-          }>('/api/v1/accounts/login', {
+          const result = await internalFetch<LoginResponse>('/api/v1/auth/login', {
             method: 'POST',
             body: JSON.stringify({
               email: credentials.email,
@@ -28,11 +34,15 @@ export const authOptions: NextAuthOptions = {
             }),
           });
 
+          const active = pickActiveAccount(result.accounts);
+
           return {
-            id: account.id,
-            name: account.name,
-            email: account.email,
-            plan: account.plan,
+            id: result.user.id,
+            name: result.user.name,
+            email: result.user.email,
+            accounts: result.accounts,
+            activeAccountId: active?.id,
+            role: active?.role,
           };
         } catch {
           return null;
@@ -47,15 +57,31 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
-        token.id = user.id;
-        token.plan = (user as { plan?: string }).plan;
+        const u = user as {
+          id: string;
+          accounts?: AccountMembership[];
+          activeAccountId?: string;
+          role?: string;
+        };
+        token.id = u.id;
+        token.accounts = u.accounts || [];
+        token.activeAccountId = u.activeAccountId;
+        token.role = u.role;
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
-        (session.user as { id?: string }).id = token.id as string;
-        (session.user as { plan?: string }).plan = token.plan as string;
+        const u = session.user as {
+          id?: string;
+          accounts?: AccountMembership[];
+          activeAccountId?: string;
+          role?: string;
+        };
+        u.id = token.id as string;
+        u.accounts = (token.accounts as AccountMembership[]) || [];
+        u.activeAccountId = token.activeAccountId as string | undefined;
+        u.role = token.role as string | undefined;
       }
       return session;
     },

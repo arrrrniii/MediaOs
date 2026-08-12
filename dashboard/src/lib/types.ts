@@ -1,3 +1,13 @@
+export type AccountRole = 'owner' | 'admin' | 'editor' | 'viewer';
+
+/** An account the signed-in user belongs to, plus the role that gets them in. */
+export interface AccountMembership {
+  id: string;
+  name: string;
+  plan: string;
+  role: AccountRole;
+}
+
 export interface Account {
   id: string;
   name: string;
@@ -31,6 +41,20 @@ export interface ProjectSettings {
   max_width: number;
   max_height: number;
   default_access: 'public' | 'private';
+  /** When true, only named variants may be delivered (arbitrary /img denied). */
+  strict_transforms?: boolean;
+}
+
+export interface NamedVariant {
+  id?: string;
+  project_id?: string;
+  name: string;
+  mode: 'fit' | 'fill' | 'auto' | 'force';
+  width: number;
+  height: number;
+  format: 'auto' | 'webp' | 'avif' | 'jpeg' | 'png';
+  quality: number | null;
+  builtin?: boolean;
 }
 
 export interface ApiKey {
@@ -70,6 +94,29 @@ export interface FileRecord {
   processing_ms: number;
   created_at: string;
   updated_at: string;
+  // Video (Phase 8b): present once the HLS pipeline has run.
+  has_hls?: boolean;
+  video_status?: string;
+  hls_url?: string;
+  poster_url?: string;
+  tracks?: VideoTrack[];
+}
+
+export interface VideoTrack {
+  lang: string;
+  label: string;
+  url: string;
+  format?: string;
+}
+
+export interface PlaybackAnalytics {
+  file_id: string;
+  window_days: number;
+  by_event: Record<string, number>;
+  plays: number;
+  completions: number;
+  completion_rate: number;
+  plays_over_time: { day: string; plays: number }[];
 }
 
 export interface Webhook {
@@ -123,4 +170,23 @@ export interface PaginatedResponse<T> {
   total: number;
   page?: number;
   limit?: number;
+}
+
+// The session carries the user's memberships so route handlers can scope
+// worker calls without re-querying on every request.
+declare module 'next-auth' {
+  interface User {
+    accounts?: AccountMembership[];
+    activeAccountId?: string;
+    role?: string;
+  }
+}
+
+declare module 'next-auth/jwt' {
+  interface JWT {
+    id?: string;
+    accounts?: AccountMembership[];
+    activeAccountId?: string;
+    role?: string;
+  }
 }

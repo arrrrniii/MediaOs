@@ -17,11 +17,7 @@ import {
 } from '@/components/ui/dialog';
 import { Plus } from 'lucide-react';
 
-export default function CreateProjectModal({
-  accountId,
-}: {
-  accountId: string;
-}) {
+export default function CreateProjectModal() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
@@ -35,7 +31,7 @@ export default function CreateProjectModal({
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountId, name, description }),
+        body: JSON.stringify({ name, description }),
       });
       if (!res.ok) {
         const body = await res.json();

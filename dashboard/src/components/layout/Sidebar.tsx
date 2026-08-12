@@ -8,8 +8,10 @@ import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
   FolderKanban,
+  Recycle,
   Settings,
   HardDrive,
+  Activity,
   X,
   ChevronRight,
   LogOut,
@@ -21,9 +23,25 @@ import { Button } from '@/components/ui/button';
 const navItems = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
   { href: '/dashboard/projects', label: 'Projects', icon: FolderKanban },
+  { href: '/dashboard/lifecycle', label: 'Lifecycle', icon: Recycle },
+  { href: '/dashboard/storage', label: 'Storage', icon: HardDrive },
   { href: '/dashboard/docs', label: 'Docs', icon: BookOpen },
   { href: '/dashboard/account', label: 'Account', icon: Settings },
 ];
+
+// The System Health link is shown only to the configured operator (ADMIN_EMAIL);
+// the server decides via /api/system/authorized so no cross-tenant data leaks
+// into a normal user's nav.
+function useSystemAdmin() {
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    fetch('/api/system/authorized')
+      .then((r) => r.json())
+      .then((d) => setIsAdmin(!!d.admin))
+      .catch(() => {});
+  }, []);
+  return isAdmin;
+}
 
 function useUpdateCheck() {
   const [update, setUpdate] = useState<{
@@ -50,6 +68,11 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { data: session } = useSession();
   const update = useUpdateCheck();
+  const isAdmin = useSystemAdmin();
+
+  const items = isAdmin
+    ? [...navItems, { href: '/dashboard/system', label: 'System', icon: Activity }]
+    : navItems;
 
   const initials = session?.user?.name
     ?.split(' ')
@@ -91,7 +114,7 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
         <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
           Menu
         </p>
-        {navItems.map((item) => {
+        {items.map((item) => {
           const active =
             item.href === '/dashboard'
               ? pathname === '/dashboard'

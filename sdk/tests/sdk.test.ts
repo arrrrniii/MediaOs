@@ -207,6 +207,115 @@ describe('MediaOS SDK', () => {
         'https://cdn.example.com/img/fit/100/100/f/proj/image.webp'
       );
     });
+
+    it('should build a named-variant URL', () => {
+      expect(mv.variantUrl('proj/image.webp', 'thumbnail')).toBe(
+        'https://cdn.example.com/img/v/thumbnail/f/proj/image.webp'
+      );
+    });
+
+    it('should include format/token/expires on a signed variant URL', () => {
+      const url = mv.variantUrl('proj/image.webp', 'hero', { format: 'avif', token: 'abc', expires: 123 });
+      expect(url).toContain('/img/v/hero/f/proj/image.webp?');
+      expect(url).toContain('format=avif');
+      expect(url).toContain('token=abc');
+      expect(url).toContain('expires=123');
+    });
+
+    it('should build a local srcset string', () => {
+      const s = mv.srcset('proj/image.webp', [320, 640]);
+      expect(s).toBe(
+        'https://cdn.example.com/img/fit/320/0/f/proj/image.webp 320w, ' +
+        'https://cdn.example.com/img/fit/640/0/f/proj/image.webp 640w'
+      );
+    });
+  });
+
+  // ── Delivery: variants, srcset, purge, direct/multipart ──
+  describe('variants', () => {
+    it('should list variants', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ data: [], builtins: [{ name: 'thumbnail' }] }));
+      const result = await mv.variants.list();
+      expect(result.builtins[0].name).toBe('thumbnail');
+      const [url] = mockFetch.mock.calls[0];
+      expect(url).toBe('https://cdn.example.com/api/v1/variants');
+    });
+
+    it('should create a variant', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ id: 'v1', name: 'card', mode: 'fill', width: 600, height: 400, format: 'auto', quality: null }));
+      const v = await mv.variants.create({ name: 'card', mode: 'fill', width: 600, height: 400 });
+      expect(v.name).toBe('card');
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toBe('https://cdn.example.com/api/v1/variants');
+      expect(opts.method).toBe('POST');
+    });
+
+    it('should delete a variant', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ deleted: true, name: 'card' }));
+      await mv.variants.delete('card');
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toBe('https://cdn.example.com/api/v1/variants/card');
+      expect(opts.method).toBe('DELETE');
+    });
+  });
+
+  describe('files.srcset / files.purgeCache', () => {
+    it('should GET a srcset with widths', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ widths: [320], sizes: '100vw', srcset: 'x 320w', urls: [] }));
+      await mv.files.srcset('file-1', { widths: [320, 640] });
+      const [url] = mockFetch.mock.calls[0];
+      expect(url).toContain('/api/v1/files/file-1/srcset');
+      expect(url).toContain('widths=320%2C640');
+    });
+
+    it('should POST purge-cache', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ cache_version: 2, objects_removed: 0, purged: true }));
+      const r = await mv.files.purgeCache('file-1');
+      expect(r.cache_version).toBe(2);
+      const [url, opts] = mockFetch.mock.calls[0];
+      expect(url).toBe('https://cdn.example.com/api/v1/files/file-1/purge-cache');
+      expect(opts.method).toBe('POST');
+    });
+  });
+
+  describe('upload idempotency', () => {
+    it('should send the Idempotency-Key header', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({ id: 'file-1' }));
+      await mv.upload(Buffer.from('data'), { idempotencyKey: 'key-abc' });
+      const [, opts] = mockFetch.mock.calls[0];
+      expect(opts.headers['Idempotency-Key']).toBe('key-abc');
+    });
+  });
+
+  describe('direct upload', () => {
+    it('should create a grant then PUT the bytes', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ id: 'g1', upload_url: 'https://cdn.example.com/api/v1/uploads/direct/tok', method: 'PUT' }))
+        .mockResolvedValueOnce(mockResponse({ id: 'file-1', type: 'image' }));
+      const result = await mv.directUpload(Buffer.from('bytes'), { contentType: 'image/png' });
+      expect(result.id).toBe('file-1');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const [grantUrl] = mockFetch.mock.calls[0];
+      expect(grantUrl).toBe('https://cdn.example.com/api/v1/uploads/direct');
+      const [putUrl, putOpts] = mockFetch.mock.calls[1];
+      expect(putUrl).toBe('https://cdn.example.com/api/v1/uploads/direct/tok');
+      expect(putOpts.method).toBe('PUT');
+    });
+  });
+
+  describe('resumable upload', () => {
+    it('should start, upload parts, and complete', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse({ id: 's1', status: 'active', part_size: 4, parts: [], received_bytes: 0, total_bytes: 8, file_id: null }))
+        .mockResolvedValueOnce(mockResponse({ part_number: 1, size: 4, received_bytes: 4 }))
+        .mockResolvedValueOnce(mockResponse({ part_number: 2, size: 4, received_bytes: 8 }))
+        .mockResolvedValueOnce(mockResponse({ file: { id: 'file-1', type: 'file' } }));
+      const result = await mv.uploadResumable(Buffer.from('abcdefgh'), { filename: 'x.bin', partSize: 4 });
+      expect(result.id).toBe('file-1');
+      // start + 2 parts + complete = 4 calls
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(mockFetch.mock.calls[3][0]).toBe('https://cdn.example.com/api/v1/uploads/multipart/s1/complete');
+    });
   });
 
   // ── Usage ──────────────────────────────────────────

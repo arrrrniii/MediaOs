@@ -1,6 +1,6 @@
 const { Router } = require('express');
 const multer = require('multer');
-const adminAuth = require('../middleware/adminAuth');
+const { sessionScope, requireRole } = require('../middleware/sessionAuth');
 const loadProject = require('../middleware/loadProject');
 const { listFiles, getFile, deleteFile, uploadFile } = require('../services/fileService');
 const archiver = require('archiver');
@@ -14,8 +14,8 @@ const upload = multer({
   limits: { fileSize: config.maxFileSize },
 });
 
-// GET /api/v1/projects/:id/files — list files (admin)
-router.get('/api/v1/projects/:id/files', adminAuth, loadProject, async (req, res, next) => {
+// GET /api/v1/projects/:id/files — list files (dashboard, account-scoped)
+router.get('/api/v1/projects/:id/files', ...sessionScope, requireRole('viewer'), loadProject, async (req, res, next) => {
   try {
     const result = await listFiles(req.project, {
       page: req.query.page,
@@ -33,8 +33,8 @@ router.get('/api/v1/projects/:id/files', adminAuth, loadProject, async (req, res
   }
 });
 
-// DELETE /api/v1/projects/:id/files/:fileId — delete file (admin)
-router.delete('/api/v1/projects/:id/files/:fileId', adminAuth, loadProject, async (req, res, next) => {
+// DELETE /api/v1/projects/:id/files/:fileId — delete file (dashboard, account-scoped)
+router.delete('/api/v1/projects/:id/files/:fileId', ...sessionScope, requireRole('editor'), loadProject, async (req, res, next) => {
   try {
     const result = await deleteFile(req.params.fileId, req.project);
     if (!result) {
@@ -49,8 +49,8 @@ router.delete('/api/v1/projects/:id/files/:fileId', adminAuth, loadProject, asyn
   }
 });
 
-// POST /api/v1/projects/:id/upload — upload file (admin)
-router.post('/api/v1/projects/:id/upload', adminAuth, loadProject, upload.single('file'), async (req, res, next) => {
+// POST /api/v1/projects/:id/upload — upload file (dashboard, account-scoped)
+router.post('/api/v1/projects/:id/upload', ...sessionScope, requireRole('editor'), loadProject, upload.single('file'), async (req, res, next) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -77,7 +77,7 @@ router.post('/api/v1/projects/:id/upload', adminAuth, loadProject, upload.single
 });
 
 // GET /api/v1/projects/:id/files/:fileId/download — download single file
-router.get('/api/v1/projects/:id/files/:fileId/download', adminAuth, loadProject, async (req, res, next) => {
+router.get('/api/v1/projects/:id/files/:fileId/download', ...sessionScope, requireRole('viewer'), loadProject, async (req, res, next) => {
   try {
     const file = await getFile(req.params.fileId, req.project);
     if (!file) {
@@ -98,7 +98,7 @@ router.get('/api/v1/projects/:id/files/:fileId/download', adminAuth, loadProject
 });
 
 // GET /api/v1/projects/:id/files/download/zip — download all files as zip
-router.get('/api/v1/projects/:id/files/download/zip', adminAuth, loadProject, async (req, res, next) => {
+router.get('/api/v1/projects/:id/files/download/zip', ...sessionScope, requireRole('viewer'), loadProject, async (req, res, next) => {
   try {
     const result = await listFiles(req.project, {
       page: 1,

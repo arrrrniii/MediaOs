@@ -1,6 +1,5 @@
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { adminFetch } from '@/lib/api';
+import { getAccountContext } from '@/lib/session';
+import { accountFetch } from '@/lib/api';
 import { formatBytes, formatDate } from '@/lib/utils';
 import type { Project, PaginatedResponse } from '@/lib/types';
 import {
@@ -14,17 +13,16 @@ import CreateProjectModal from '@/components/projects/CreateProjectModal';
 import Link from 'next/link';
 
 export default async function ProjectsPage() {
-  const session = await getServerSession(authOptions);
-  const accountId = (session?.user as { id?: string })?.id || '';
+  const ctx = await getAccountContext();
 
   let projects: Project[] = [];
-  try {
-    const res = await adminFetch<PaginatedResponse<Project>>(
-      `/api/v1/projects?account_id=${accountId}`,
-    );
-    projects = res.data;
-  } catch {
-    // API may not be available yet
+  if (ctx) {
+    try {
+      const res = await accountFetch<PaginatedResponse<Project>>(ctx, '/api/v1/projects');
+      projects = res.data;
+    } catch {
+      // API may not be available yet
+    }
   }
 
   return (
@@ -36,7 +34,7 @@ export default async function ProjectsPage() {
             Manage your media projects
           </p>
         </div>
-        <CreateProjectModal accountId={accountId} />
+        <CreateProjectModal />
       </div>
 
       {projects.length === 0 ? (

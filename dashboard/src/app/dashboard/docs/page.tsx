@@ -334,7 +334,8 @@ dashboard.yourdomain.com {
               <tbody>
                 <tr className="border-b border-border/30"><td className="px-4 py-2 font-mono text-xs">PUBLIC_URL</td><td className="px-4 py-2 text-muted-foreground">Your CDN domain (e.g. https://cdn.yourdomain.com)</td></tr>
                 <tr className="border-b border-border/30"><td className="px-4 py-2 font-mono text-xs">DASHBOARD_URL</td><td className="px-4 py-2 text-muted-foreground">Dashboard URL (e.g. https://dashboard.yourdomain.com)</td></tr>
-                <tr className="border-b border-border/30"><td className="px-4 py-2 font-mono text-xs">MASTER_KEY</td><td className="px-4 py-2 text-muted-foreground">Admin API key for dashboard-to-worker auth</td></tr>
+                <tr className="border-b border-border/30"><td className="px-4 py-2 font-mono text-xs">MASTER_KEY</td><td className="px-4 py-2 text-muted-foreground">System-admin key for creating and listing accounts</td></tr>
+                <tr className="border-b border-border/30"><td className="px-4 py-2 font-mono text-xs">INTERNAL_API_SECRET</td><td className="px-4 py-2 text-muted-foreground">Shared secret for dashboard-to-worker auth</td></tr>
                 <tr className="border-b border-border/30"><td className="px-4 py-2 font-mono text-xs">NEXTAUTH_SECRET</td><td className="px-4 py-2 text-muted-foreground">Random secret for session encryption</td></tr>
                 <tr className="border-b border-border/30"><td className="px-4 py-2 font-mono text-xs">PG_PASSWORD</td><td className="px-4 py-2 text-muted-foreground">PostgreSQL password</td></tr>
                 <tr className="border-b border-border/30"><td className="px-4 py-2 font-mono text-xs">MINIO_ROOT_PASSWORD</td><td className="px-4 py-2 text-muted-foreground">MinIO storage password</td></tr>

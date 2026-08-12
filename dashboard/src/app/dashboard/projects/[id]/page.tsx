@@ -1,4 +1,5 @@
-import { adminFetch } from '@/lib/api';
+import { getAccountContext } from '@/lib/session';
+import { accountFetch } from '@/lib/api';
 import { formatBytes, formatRelativeTime } from '@/lib/utils';
 import type { Project, FileRecord, PaginatedResponse } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,16 +13,19 @@ export default async function ProjectDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  let project: Project;
+  const ctx = await getAccountContext();
+  if (!ctx) return null;
+
   try {
-    project = await adminFetch<Project>(`/api/v1/projects/${id}`);
+    await accountFetch<Project>(ctx, `/api/v1/projects/${id}`);
   } catch {
     return null;
   }
 
   let recentFiles: FileRecord[] = [];
   try {
-    const res = await adminFetch<PaginatedResponse<FileRecord>>(
+    const res = await accountFetch<PaginatedResponse<FileRecord>>(
+      ctx,
       `/api/v1/projects/${id}/files?limit=5&sort=created_at&order=desc`,
     );
     recentFiles = res.data;
@@ -31,7 +35,8 @@ export default async function ProjectDetailPage({
 
   let bandwidth = 0;
   try {
-    const usage = await adminFetch<{ bandwidth_bytes?: number; download_bytes?: number }>(
+    const usage = await accountFetch<{ bandwidth_bytes?: number; download_bytes?: number }>(
+      ctx,
       `/api/v1/projects/${id}/usage`,
     );
     bandwidth = usage.bandwidth_bytes || usage.download_bytes || 0;

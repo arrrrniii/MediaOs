@@ -3,6 +3,7 @@ const auth = require('../middleware/auth');
 const { listFiles, getFile, deleteFile } = require('../services/fileService');
 const { generateOriginal, generateTransform } = require('../services/signedUrl');
 const { query } = require('../db');
+const config = require('../config');
 
 const router = Router();
 
@@ -126,6 +127,40 @@ router.get('/api/v1/files/:id/signed-transform-url', auth('read'), async (req, r
 
     const result = generateTransform(req.project, rows[0].storage_key, { mode, width, height, format }, expiresIn);
     res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/v1/files/:id/hls-url — signed (or public) HLS master playlist URL
+router.get('/api/v1/files/:id/hls-url', auth('read'), async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT f.id, f.access, f.type, f.poster_key, o.storage_key AS master_key
+         FROM files f
+         LEFT JOIN file_objects o ON o.file_id = f.id AND o.role = 'hls'
+        WHERE f.id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL`,
+      [req.params.id, req.project.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'File not found', code: 'NOT_FOUND' });
+    }
+    const file = rows[0];
+    if (file.type !== 'video' || !file.master_key) {
+      return res.status(400).json({ error: 'No HLS stream available for this file', code: 'NO_HLS' });
+    }
+
+    const expiresIn = Math.min(86400, Math.max(60, parseInt(req.query.expires) || 3600));
+    if (file.access === 'public') {
+      return res.json({ url: `${config.publicUrl}/f/${file.master_key}` });
+    }
+    const signed = generateOriginal(req.project, file.master_key, expiresIn);
+    const poster = file.poster_key
+      ? (file.access === 'public'
+          ? `${config.publicUrl}/f/${file.poster_key}`
+          : generateOriginal(req.project, file.poster_key, expiresIn).url)
+      : undefined;
+    res.json({ url: signed.url, expires_at: signed.expires_at, poster_url: poster });
   } catch (err) {
     next(err);
   }

@@ -1,14 +1,16 @@
 const { Router } = require('express');
-const adminAuth = require('../middleware/adminAuth');
+const { sessionScope, requireRole } = require('../middleware/sessionAuth');
+const loadProject = require('../middleware/loadProject');
 const { createKey, revokeKey, listKeys, revealKey } = require('../services/keyService');
-const { query } = require('../db');
 
 const router = Router();
 
+// loadProject resolves :id against req.account, so every handler below is
+// already proven to be operating on a project the caller's account owns.
+
 // POST /api/v1/projects/:id/keys — create API key
-router.post('/api/v1/projects/:id/keys', adminAuth, async (req, res, next) => {
+router.post('/api/v1/projects/:id/keys', ...sessionScope, requireRole('admin'), loadProject, async (req, res, next) => {
   try {
-    const projectId = req.params.id;
     const { name = 'Default Key', scopes = ['upload', 'read'], rate_limit, expires_at } = req.body;
 
     // Validate scopes
@@ -21,19 +23,14 @@ router.post('/api/v1/projects/:id/keys', adminAuth, async (req, res, next) => {
       });
     }
 
-    // Verify project exists
-    const { rows: projects } = await query(
-      "SELECT id FROM projects WHERE id = $1 AND status = 'active'",
-      [projectId]
-    );
-    if (projects.length === 0) {
+    if (req.project.status !== 'active') {
       return res.status(404).json({
         error: 'Project not found',
         code: 'NOT_FOUND',
       });
     }
 
-    const result = await createKey(projectId, name, scopes, {
+    const result = await createKey(req.project.id, name, scopes, {
       rate_limit,
       expires_at,
     });
@@ -45,9 +42,9 @@ router.post('/api/v1/projects/:id/keys', adminAuth, async (req, res, next) => {
 });
 
 // GET /api/v1/projects/:id/keys — list keys
-router.get('/api/v1/projects/:id/keys', adminAuth, async (req, res, next) => {
+router.get('/api/v1/projects/:id/keys', ...sessionScope, requireRole('viewer'), loadProject, async (req, res, next) => {
   try {
-    const keys = await listKeys(req.params.id);
+    const keys = await listKeys(req.project.id);
     res.json({ data: keys });
   } catch (err) {
     next(err);
@@ -55,9 +52,9 @@ router.get('/api/v1/projects/:id/keys', adminAuth, async (req, res, next) => {
 });
 
 // POST /api/v1/projects/:id/keys/:keyId/reveal — reveal full API key
-router.post('/api/v1/projects/:id/keys/:keyId/reveal', adminAuth, async (req, res, next) => {
+router.post('/api/v1/projects/:id/keys/:keyId/reveal', ...sessionScope, requireRole('admin'), loadProject, async (req, res, next) => {
   try {
-    const key = await revealKey(req.params.keyId);
+    const key = await revealKey(req.params.keyId, req.project.id);
     if (!key) {
       return res.status(404).json({
         error: 'Key not found, revoked, or was created before reveal feature',
@@ -71,9 +68,9 @@ router.post('/api/v1/projects/:id/keys/:keyId/reveal', adminAuth, async (req, re
 });
 
 // DELETE /api/v1/projects/:id/keys/:keyId — revoke key
-router.delete('/api/v1/projects/:id/keys/:keyId', adminAuth, async (req, res, next) => {
+router.delete('/api/v1/projects/:id/keys/:keyId', ...sessionScope, requireRole('admin'), loadProject, async (req, res, next) => {
   try {
-    const revoked = await revokeKey(req.params.keyId);
+    const revoked = await revokeKey(req.params.keyId, req.project.id);
     if (!revoked) {
       return res.status(404).json({
         error: 'Key not found or already revoked',

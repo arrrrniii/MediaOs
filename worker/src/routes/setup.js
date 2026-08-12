@@ -1,11 +1,18 @@
 const { Router } = require('express');
-const bcrypt = require('bcrypt');
+const config = require('../config');
 const { query } = require('../db');
+const ipRateLimit = require('../middleware/ipRateLimit');
+const { hashPassword, ensureOwnerUser } = require('../services/identityService');
 
 const router = Router();
 
+// The strict limit guards account creation. The needsSetup probe is a plain
+// boolean the login page polls on every load, so it gets a looser ceiling.
+const setupRateLimit = ipRateLimit('setup', config.setupRateLimit);
+const setupProbeRateLimit = ipRateLimit('setup-probe', config.setupRateLimit * 12);
+
 // GET /api/v1/setup — check if setup is needed
-router.get('/api/v1/setup', async (req, res, next) => {
+router.get('/api/v1/setup', setupProbeRateLimit, async (req, res, next) => {
   try {
     const { rows } = await query('SELECT COUNT(*) FROM accounts');
     const count = parseInt(rows[0].count);
@@ -16,7 +23,7 @@ router.get('/api/v1/setup', async (req, res, next) => {
 });
 
 // POST /api/v1/setup — create the first admin account (only works if 0 accounts)
-router.post('/api/v1/setup', async (req, res, next) => {
+router.post('/api/v1/setup', setupRateLimit, async (req, res, next) => {
   try {
     // Check no accounts exist
     const { rows: countRows } = await query('SELECT COUNT(*) FROM accounts');
@@ -45,7 +52,7 @@ router.post('/api/v1/setup', async (req, res, next) => {
       });
     }
 
-    const hash = await bcrypt.hash(password, 12);
+    const hash = await hashPassword(password);
 
     const { rows } = await query(
       `INSERT INTO accounts (name, email, password_hash, plan, status)
@@ -53,6 +60,13 @@ router.post('/api/v1/setup', async (req, res, next) => {
        RETURNING id, name, email, plan, status, created_at`,
       [name, email, hash, 'free', 'active']
     );
+
+    await ensureOwnerUser({
+      accountId: rows[0].id,
+      name,
+      email,
+      passwordHash: hash,
+    });
 
     console.log(`Setup complete — admin account created for ${email}`);
 

@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 
 export default function AccountPage() {
   const { data: session } = useSession();
-  const user = session?.user as { name?: string; email?: string; plan?: string } | undefined;
+  const user = session?.user as { name?: string; email?: string } | undefined;
 
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');

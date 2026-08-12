@@ -9,7 +9,13 @@ export default function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => setMounted(true), []);
+  // Canonical next-themes hydration guard: theme is unknown during SSR, so we
+  // render a neutral placeholder until the client has mounted. Flipping this
+  // flag once on mount is the intended use, not a cascading-render bug.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMounted(true);
+  }, []);
 
   if (!mounted) return <Button variant="ghost" size="icon" className="h-8 w-8" />;
 

@@ -258,18 +258,21 @@ if [ ! -f .env ]; then
   cp .env.example .env
 
   MASTER_KEY="mv_master_$(openssl rand -hex 24)"
+  INTERNAL_API_SECRET="$(openssl rand -hex 32)"
   NEXTAUTH_SECRET="$(openssl rand -hex 32)"
   PG_PASSWORD="$(openssl rand -hex 16)"
   MINIO_PASSWORD="$(openssl rand -hex 16)"
   REDIS_PASSWORD="$(openssl rand -hex 16)"
 
   sedi "s|^MASTER_KEY=.*|MASTER_KEY=$MASTER_KEY|" .env
+  sedi "s|^INTERNAL_API_SECRET=.*|INTERNAL_API_SECRET=$INTERNAL_API_SECRET|" .env
   sedi "s|^NEXTAUTH_SECRET=.*|NEXTAUTH_SECRET=$NEXTAUTH_SECRET|" .env
   sedi "s|^PG_PASSWORD=.*|PG_PASSWORD=$PG_PASSWORD|" .env
   sedi "s|^MINIO_ROOT_PASSWORD=.*|MINIO_ROOT_PASSWORD=$MINIO_PASSWORD|" .env
   sedi "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$REDIS_PASSWORD|" .env
 
   echo -e "  ${G}✓${NC} Master key generated"
+  echo -e "  ${G}✓${NC} Internal API secret generated"
   echo -e "  ${G}✓${NC} Database password generated"
   echo -e "  ${G}✓${NC} Redis password generated"
   echo -e "  ${G}✓${NC} MinIO password generated"

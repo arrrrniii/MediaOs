@@ -1,12 +1,12 @@
 const { Router } = require('express');
-const adminAuth = require('../middleware/adminAuth');
+const { sessionScope, requireRole } = require('../middleware/sessionAuth');
 const loadProject = require('../middleware/loadProject');
 const { createWebhook, listWebhooks, deleteWebhook } = require('../services/webhookService');
 
 const router = Router();
 
-// GET /api/v1/projects/:id/webhooks — list webhooks (admin)
-router.get('/api/v1/projects/:id/webhooks', adminAuth, loadProject, async (req, res, next) => {
+// GET /api/v1/projects/:id/webhooks — list webhooks (dashboard, account-scoped)
+router.get('/api/v1/projects/:id/webhooks', ...sessionScope, requireRole('viewer'), loadProject, async (req, res, next) => {
   try {
     const webhooks = await listWebhooks(req.project.id);
     res.json({ data: webhooks });
@@ -15,8 +15,8 @@ router.get('/api/v1/projects/:id/webhooks', adminAuth, loadProject, async (req, 
   }
 });
 
-// POST /api/v1/projects/:id/webhooks — create webhook (admin)
-router.post('/api/v1/projects/:id/webhooks', adminAuth, loadProject, async (req, res, next) => {
+// POST /api/v1/projects/:id/webhooks — create webhook (dashboard, account-scoped)
+router.post('/api/v1/projects/:id/webhooks', ...sessionScope, requireRole('admin'), loadProject, async (req, res, next) => {
   try {
     const { url, events } = req.body;
     if (!url) {
@@ -32,8 +32,8 @@ router.post('/api/v1/projects/:id/webhooks', adminAuth, loadProject, async (req,
   }
 });
 
-// DELETE /api/v1/projects/:id/webhooks/:webhookId — delete webhook (admin)
-router.delete('/api/v1/projects/:id/webhooks/:webhookId', adminAuth, loadProject, async (req, res, next) => {
+// DELETE /api/v1/projects/:id/webhooks/:webhookId — delete webhook (dashboard, account-scoped)
+router.delete('/api/v1/projects/:id/webhooks/:webhookId', ...sessionScope, requireRole('admin'), loadProject, async (req, res, next) => {
   try {
     const deleted = await deleteWebhook(req.params.webhookId, req.project.id);
     if (!deleted) {

@@ -1,20 +1,29 @@
 const express = require('express');
 const helmet = require('helmet');
+const requestId = require('./middleware/requestId');
 const corsMiddleware = require('./middleware/cors');
-const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
 const healthRoutes = require('./routes/health');
+const metricsRoutes = require('./routes/metrics');
+const authRoutes = require('./routes/authRoutes');
 const accountRoutes = require('./routes/accounts');
 const projectRoutes = require('./routes/projects');
 const apiKeyRoutes = require('./routes/apiKeys');
 const uploadRoutes = require('./routes/upload');
+const uploadsRoutes = require('./routes/uploads');
+const deliveryRoutes = require('./routes/delivery');
 const fileRoutes = require('./routes/files');
+const videoRoutes = require('./routes/video');
 const serveRoutes = require('./routes/serve');
 const webhookRoutes = require('./routes/webhooks');
 const usageRoutes = require('./routes/usage');
 const adminFileRoutes = require('./routes/adminFiles');
 const adminWebhookRoutes = require('./routes/adminWebhooks');
 const adminUsageRoutes = require('./routes/adminUsage');
+const jobRoutes = require('./routes/jobs');
+const lifecycleRoutes = require('./routes/lifecycle');
+const backendRoutes = require('./routes/backends');
+const systemRoutes = require('./routes/system');
 const setupRoutes = require('./routes/setup');
 const Queue = require('./services/queue');
 const config = require('./config');
@@ -24,6 +33,10 @@ function createApp() {
 
   // Initialize processing queue
   app.locals.queue = new Queue(config.concurrency);
+
+  // Request correlation + access logging — mounted FIRST so every request
+  // (including ones rejected downstream) carries an id and is metered.
+  app.use(requestId);
 
   // Security headers — relax CSP & CORP for CDN file-serving routes
   const cdnHelmet = helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } });
@@ -43,29 +56,57 @@ function createApp() {
   app.use(corsMiddleware);
 
   // Trust proxy for rate limiting
-  app.set('trust proxy', 1);
+  // Trust X-Forwarded-For only from private-range peers (nginx/compose
+  // network), never from a directly-connecting public client. A hop count of 1
+  // would trust the socket peer's XFF unconditionally, letting anyone reaching
+  // the worker directly spoof req.ip and mint a fresh rate-limit bucket per
+  // request. Combined with binding the published port to loopback (compose),
+  // this keeps the per-IP limiters honest.
+  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
   // Health check (no auth)
   app.use(healthRoutes);
 
+  // Prometheus metrics (gated inside the route: MASTER_KEY unless
+  // METRICS_PUBLIC/METRICS_TOKEN is set).
+  app.use(metricsRoutes);
+
   // Setup route (no auth — only works when 0 accounts exist)
   app.use(setupRoutes);
 
-  // Admin routes (master key auth)
+  // Dashboard login (internal secret auth)
+  app.use(authRoutes);
+
+  // Account routes: system-admin provisioning (master key) + legacy login
+  // + the session-scoped password change.
   app.use(accountRoutes);
+
+  // System health + reconciliation control (master key — operator, not tenant).
+  app.use(systemRoutes);
+
+  // Customer routes (session auth — scoped to an account membership)
   app.use(projectRoutes);
   app.use(apiKeyRoutes);
   app.use(adminFileRoutes);
   app.use(adminWebhookRoutes);
   app.use(adminUsageRoutes);
+  app.use(jobRoutes);
+  app.use(lifecycleRoutes);
+  app.use(backendRoutes);
 
-  // File routes (API key auth + rate limiting)
-  app.use('/api/v1/upload', rateLimit);
-  app.use('/api/v1/files', rateLimit);
-  app.use('/api/v1/webhooks', rateLimit);
-  app.use('/api/v1/usage', rateLimit);
+  // Delivery management (variants CRUD, purge-cache, srcset): session-scoped
+  // routes mount alongside the other customer routes; the file carries the
+  // API-key variants too.
+  app.use(deliveryRoutes);
+
+  // File routes (API key auth; the per-key rate limit runs inside auth(),
+  // which is the first point at which the key — and its limit — is known)
   app.use(uploadRoutes);
+  app.use(uploadsRoutes);
   app.use(fileRoutes);
+
+  // Video: subtitles, playback beacons + analytics (session + API-key scoped).
+  app.use(videoRoutes);
 
   // Webhook & usage routes (API key auth)
   app.use(webhookRoutes);

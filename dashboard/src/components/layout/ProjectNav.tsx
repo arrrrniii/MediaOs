@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { Files, Key, Webhook, BarChart3, Settings } from 'lucide-react';
+import { Files, Key, Webhook, BarChart3, Settings, ListChecks } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 const iconMap: Record<string, LucideIcon> = {
@@ -12,6 +12,7 @@ const iconMap: Record<string, LucideIcon> = {
   Webhook,
   BarChart3,
   Settings,
+  ListChecks,
 };
 
 interface Tab {

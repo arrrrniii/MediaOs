@@ -1,5 +1,13 @@
 const request = require('supertest');
-const { createTestApp, mockDb, MASTER_KEY, testAccount } = require('../setup');
+const {
+  createTestApp,
+  mockDb,
+  mockSession,
+  sessionHeaders,
+  MASTER_KEY,
+  testAccount,
+  testUser,
+} = require('../setup');
 
 let app;
 
@@ -170,31 +178,66 @@ describe('Accounts API', () => {
       const bcrypt = require('bcrypt');
       const hash = await bcrypt.hash('oldpass12', 12);
 
+      mockSession();
       mockDb.onQuery('SELECT id, password_hash', {
-        rows: [{ id: testAccount.id, password_hash: hash }],
+        rows: [{ id: testUser.id, password_hash: hash }],
       });
+      mockDb.onQuery('UPDATE users SET password_hash', { rowCount: 1 });
       mockDb.onQuery('UPDATE accounts SET password_hash', { rowCount: 1 });
 
       const res = await request(app)
-        .patch(`/api/v1/accounts/${testAccount.id}/password`)
-        .set('X-API-Key', MASTER_KEY)
+        .patch(`/api/v1/accounts/${testUser.id}/password`)
+        .set(sessionHeaders())
         .send({ current_password: 'oldpass12', new_password: 'newpass12' });
 
       expect(res.status).toBe(200);
       expect(res.body.updated).toBe(true);
     });
 
+    it('should change the session user, not the id in the path', async () => {
+      const bcrypt = require('bcrypt');
+      const hash = await bcrypt.hash('oldpass12', 12);
+
+      mockSession();
+      mockDb.onQuery('SELECT id, password_hash', {
+        rows: [{ id: testUser.id, password_hash: hash }],
+      });
+      mockDb.onQuery('UPDATE users SET password_hash', { rowCount: 1 });
+      mockDb.onQuery('UPDATE accounts SET password_hash', { rowCount: 1 });
+
+      await request(app)
+        .patch(`/api/v1/accounts/${testUser.id}/password`)
+        .set(sessionHeaders())
+        .send({ current_password: 'oldpass12', new_password: 'newpass12' });
+
+      const update = mockDb.queryCalls.find(c => c.text.includes('UPDATE users SET password_hash'));
+      expect(update.params[1]).toBe(testUser.id);
+    });
+
+    it('should 404 when the path names another user', async () => {
+      mockSession();
+
+      const res = await request(app)
+        .patch('/api/v1/accounts/somebody-else/password')
+        .set(sessionHeaders())
+        .send({ current_password: 'oldpass12', new_password: 'newpass12' });
+
+      expect(res.status).toBe(404);
+      expect(res.body.code).toBe('NOT_FOUND');
+    });
+
     it('should reject wrong current password', async () => {
       const bcrypt = require('bcrypt');
       const hash = await bcrypt.hash('realpass1', 12);
 
+      mockSession();
       mockDb.onQuery('SELECT id, password_hash', {
-        rows: [{ id: testAccount.id, password_hash: hash }],
+        rows: [{ id: testUser.id, password_hash: hash }],
       });
 
       const res = await request(app)
-        .patch(`/api/v1/accounts/${testAccount.id}/password`)
-        .set('X-API-Key', MASTER_KEY)
+        .patch(`/api/v1/accounts/${testUser.id}/password`)
+        .set(sessionHeaders())
         .send({ current_password: 'wrongpass', new_password: 'newpass12' });
 
       expect(res.status).toBe(401);
@@ -202,13 +245,25 @@ describe('Accounts API', () => {
     });
 
     it('should reject short new password', async () => {
+      mockSession();
+
       const res = await request(app)
-        .patch(`/api/v1/accounts/${testAccount.id}/password`)
-        .set('X-API-Key', MASTER_KEY)
+        .patch(`/api/v1/accounts/${testUser.id}/password`)
+        .set(sessionHeaders())
         .send({ current_password: 'oldpass12', new_password: 'short' });
 
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should reject MASTER_KEY', async () => {
+      const res = await request(app)
+        .patch(`/api/v1/accounts/${testAccount.id}/password`)
+        .set('X-API-Key', MASTER_KEY)
+        .send({ current_password: 'oldpass12', new_password: 'newpass12' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('INTERNAL_SECRET_REQUIRED');
     });
   });
 });

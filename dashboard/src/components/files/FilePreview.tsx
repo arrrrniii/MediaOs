@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { FileRecord } from '@/lib/types';
 import { formatBytes, formatDate } from '@/lib/utils';
@@ -22,7 +22,9 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { Copy, Trash2, ExternalLink, X, ImageIcon, FileVideo, FileAudio, FileText, Download } from 'lucide-react';
+import { Copy, Trash2, ExternalLink, X, ImageIcon, FileVideo, FileAudio, FileText, Download, Upload } from 'lucide-react';
+import VideoPlayer from './VideoPlayer';
+import VideoAnalytics from './VideoAnalytics';
 
 function CopyRow({ text, label }: { text: string; label: string }) {
   return (
@@ -59,6 +61,64 @@ export default function FilePreview({
   onDelete: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
+  const [srcset, setSrcset] = useState<string | null>(null);
+  const [uploadingSub, setUploadingSub] = useState(false);
+  const isImage = file.type === 'image';
+  const isVideo = file.type === 'video';
+  const isPlayable = isVideo && (file.has_hls || file.status === 'done');
+
+  // The /img base is the /f URL with the file path stripped off.
+  const imgBase = file.url ? file.url.replace(`/f/${file.storage_key}`, '') : '';
+  const variantUrl = (name: string) => `${imgBase}/img/v/${name}/f/${file.storage_key}`;
+  const VARIANTS = ['thumbnail', 'card', 'hero'];
+
+  useEffect(() => {
+    if (!isImage) return;
+    let cancelled = false;
+    fetch(`/api/projects/${file.project_id}/files/${file.id}/srcset`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d?.srcset) setSrcset(d.srcset); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [file.id, file.project_id, file.storage_key, isImage]);
+
+  async function purgeCache() {
+    try {
+      const res = await fetch(`/api/projects/${file.project_id}/files/${file.id}/purge-cache`, { method: 'POST' });
+      if (res.ok) toast.success('Transform cache purged');
+      else toast.error('Failed to purge cache');
+    } catch {
+      toast.error('Failed to purge cache');
+    }
+  }
+
+  async function uploadSubtitle(e: React.ChangeEvent<HTMLInputElement>) {
+    const input = e.target;
+    const f = input.files?.[0];
+    if (!f) return;
+    // Derive a language from the filename (e.g. "movie.en.srt" → "en"), else 'en'.
+    const parts = f.name.toLowerCase().replace(/\.(srt|vtt)$/, '').split('.');
+    const lang = parts.length > 1 && /^[a-z]{2,3}(-[a-z0-9]+)?$/.test(parts[parts.length - 1])
+      ? parts[parts.length - 1]
+      : 'en';
+    const form = new FormData();
+    form.append('file', f);
+    form.append('lang', lang);
+    setUploadingSub(true);
+    try {
+      const res = await fetch(`/api/projects/${file.project_id}/files/${file.id}/subtitles`, {
+        method: 'POST',
+        body: form,
+      });
+      if (res.ok) toast.success(`Subtitle "${lang}" uploaded`);
+      else toast.error('Failed to upload subtitle');
+    } catch {
+      toast.error('Failed to upload subtitle');
+    } finally {
+      setUploadingSub(false);
+      input.value = '';
+    }
+  }
 
   async function handleDelete() {
     setDeleting(true);
@@ -79,8 +139,6 @@ export default function FilePreview({
       setDeleting(false);
     }
   }
-
-  const isImage = file.type === 'image';
 
   return (
     <Dialog open onOpenChange={onClose}>
@@ -113,6 +171,17 @@ export default function FilePreview({
                   alt={file.filename}
                   className="max-h-[50vh] w-auto rounded-lg object-contain"
                 />
+              </div>
+            ) : isPlayable ? (
+              <div className="w-full">
+                <VideoPlayer file={file} />
+              </div>
+            ) : isVideo ? (
+              <div className="flex flex-col items-center gap-3 text-center">
+                <FileTypeIcon type={file.type} />
+                <p className="text-xs text-muted-foreground">
+                  {file.status === 'processing' ? 'Video is still processing…' : 'No preview available'}
+                </p>
               </div>
             ) : (
               <div className="flex flex-col items-center gap-3 text-center">
@@ -173,6 +242,46 @@ export default function FilePreview({
                   <CopyRow key={key} text={url} label={`${key} URL`} />
                 ))}
             </div>
+
+            {/* Video: playback analytics + subtitle upload */}
+            {isVideo && (
+              <>
+                <VideoAnalytics file={file} />
+                <div className="space-y-2">
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">Subtitles</p>
+                  <label className="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-border/60 px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted/40">
+                    <Upload className="h-3.5 w-3.5" />
+                    {uploadingSub ? 'Uploading…' : 'Upload .vtt or .srt track'}
+                    <input
+                      type="file"
+                      accept=".vtt,.srt"
+                      className="hidden"
+                      disabled={uploadingSub}
+                      onChange={uploadSubtitle}
+                    />
+                  </label>
+                </div>
+              </>
+            )}
+
+            {/* Named variants + srcset (images only) */}
+            {isImage && imgBase && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">Variants &amp; srcset</p>
+                  <button
+                    onClick={purgeCache}
+                    className="text-[11px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                  >
+                    Purge cache
+                  </button>
+                </div>
+                {VARIANTS.map((v) => (
+                  <CopyRow key={v} text={variantUrl(v)} label={`${v} variant`} />
+                ))}
+                {srcset && <CopyRow text={srcset} label="srcset" />}
+              </div>
+            )}
 
             {/* Actions */}
             <div className="mt-auto flex gap-2 border-t border-border/50 pt-4">

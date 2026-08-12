@@ -3,7 +3,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2
     container_name: mv-postgres
     environment:
       POSTGRES_DB: ${PG_DATABASE:-mediaos}
@@ -17,11 +17,16 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    mem_limit: ${PG_MEM_LIMIT:-1g}
+    cpus: ${PG_CPUS:-1.0}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks:
       - mediaos
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     container_name: mv-minio
     command: server /data --console-address ":9001"
     environment:
@@ -35,13 +40,47 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    mem_limit: ${MINIO_MEM_LIMIT:-1g}
+    cpus: ${MINIO_CPUS:-1.0}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks:
+      - mediaos
+
+  minio-setup:
+    image: minio/mc:latest@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    container_name: mv-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set root http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
+        mc mb --ignore-existing root/$${MINIO_BUCKET}
+        mc admin user add root "$${WORKER_MINIO_ACCESS_KEY}" "$${WORKER_MINIO_SECRET_KEY}" || true
+        mc admin policy attach root readwrite --user "$${WORKER_MINIO_ACCESS_KEY}" || true
+        mc admin user add root "$${IMGPROXY_MINIO_ACCESS_KEY}" "$${IMGPROXY_MINIO_SECRET_KEY}" || true
+        mc admin policy attach root readonly --user "$${IMGPROXY_MINIO_ACCESS_KEY}" || true
+        echo "minio provisioning complete"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-mvadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme_minio_password}
+      MINIO_BUCKET: ${MINIO_BUCKET:-mediaos}
+      WORKER_MINIO_ACCESS_KEY: ${WORKER_MINIO_ACCESS_KEY:-mediaos_worker}
+      WORKER_MINIO_SECRET_KEY: ${WORKER_MINIO_SECRET_KEY:-changeme_worker_minio_secret}
+      IMGPROXY_MINIO_ACCESS_KEY: ${IMGPROXY_MINIO_ACCESS_KEY:-mediaos_imgproxy}
+      IMGPROXY_MINIO_SECRET_KEY: ${IMGPROXY_MINIO_SECRET_KEY:-changeme_imgproxy_minio_secret}
+    restart: "no"
     networks:
       - mediaos
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:ee64a64eaab618d88051c3ade8f6352d11531fcf79d9a4818b9b183d8c1d18ba
     container_name: mv-redis
-    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme_redis_password}
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme_redis_password} --appendonly yes
     volumes:
       - redis_data:/data
     healthcheck:
@@ -50,22 +89,31 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    cpus: ${REDIS_CPUS:-0.5}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks:
       - mediaos
 
   imgproxy:
-    image: darthsim/imgproxy:latest
+    image: darthsim/imgproxy:latest@sha256:5dce1ca5f17581aa7c68726442eae2d2fdff01e7604bf26430721772c728a7db
     container_name: mv-imgproxy
     environment:
       IMGPROXY_USE_S3: "true"
       IMGPROXY_S3_ENDPOINT: http://minio:9000
-      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-mvadmin}
-      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-changeme_minio_password}
+      AWS_ACCESS_KEY_ID: ${IMGPROXY_MINIO_ACCESS_KEY:-mediaos_imgproxy}
+      AWS_SECRET_ACCESS_KEY: ${IMGPROXY_MINIO_SECRET_KEY:-changeme_imgproxy_minio_secret}
       AWS_REGION: us-east-1
-      IMGPROXY_PREFERRED_FORMATS: webp
-      IMGPROXY_ENFORCE_WEBP: "true"
+      # Allow AVIF and WebP so the worker's per-request format negotiation
+      # (Accept: image/avif -> avif, else webp) is honored. ENFORCE_WEBP would
+      # pin every output to webp and make an explicit @avif request fall back
+      # to jpeg, defeating negotiation.
+      IMGPROXY_PREFERRED_FORMATS: "avif,webp,jpeg"
       IMGPROXY_QUALITY: ${WEBP_QUALITY:-80}
       IMGPROXY_WEBP_QUALITY: ${WEBP_QUALITY:-80}
+      IMGPROXY_AVIF_QUALITY: ${AVIF_QUALITY:-63}
       IMGPROXY_MAX_SRC_RESOLUTION: 50
       IMGPROXY_CONCURRENCY: 10
       IMGPROXY_SET_CACHE_CONTROL: "public, max-age=31536000"
@@ -73,7 +121,14 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
     restart: unless-stopped
+    mem_limit: ${IMGPROXY_MEM_LIMIT:-512m}
+    cpus: ${IMGPROXY_CPUS:-1.0}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks:
       - mediaos
 
@@ -81,7 +136,10 @@ services:
     image: arrrrniii/mediaos:worker
     container_name: mv-worker
     ports:
-      - "${API_PORT:-3000}:3000"
+      # Loopback only — see docker-compose.yml for rationale (nginx/dashboard
+      # reach the worker over the compose network; direct exposure would let
+      # clients bypass nginx and spoof X-Forwarded-For against rate limiters).
+      - "127.0.0.1:${API_PORT:-3000}:3000"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000
@@ -93,13 +151,15 @@ services:
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
       MINIO_USE_SSL: "false"
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-mvadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-changeme_minio_password}
+      MINIO_ACCESS_KEY: ${WORKER_MINIO_ACCESS_KEY:-mediaos_worker}
+      MINIO_SECRET_KEY: ${WORKER_MINIO_SECRET_KEY:-changeme_worker_minio_secret}
       MINIO_BUCKET: ${MINIO_BUCKET:-mediaos}
       IMGPROXY_URL: http://imgproxy:8080
       REDIS_URL: redis://:${REDIS_PASSWORD:-changeme_redis_password}@redis:6379
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
       MASTER_KEY: ${MASTER_KEY:-}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+      STORAGE_ENCRYPTION_KEY: ${STORAGE_ENCRYPTION_KEY:-}
       ADMIN_NAME: ${ADMIN_NAME:-Admin}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
@@ -110,14 +170,24 @@ services:
       VIDEO_MAX_HEIGHT: ${VIDEO_MAX_HEIGHT:-1080}
       MAX_FILE_SIZE: ${MAX_FILE_SIZE:-104857600}
       CONCURRENCY: ${CONCURRENCY:-3}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      METRICS_PUBLIC: ${METRICS_PUBLIC:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     depends_on:
       postgres:
         condition: service_healthy
       minio:
         condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     restart: unless-stopped
+    mem_limit: ${WORKER_MEM_LIMIT:-2g}
+    cpus: ${WORKER_CPUS:-2.0}
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
     networks:
       - mediaos
 
@@ -133,14 +203,21 @@ services:
       NEXTAUTH_URL: ${DASHBOARD_URL:-http://localhost:3001}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-changeme_nextauth_secret}
       MASTER_KEY: ${MASTER_KEY:-}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
       PG_HOST: postgres
       PG_PORT: 5432
       PG_DATABASE: ${PG_DATABASE:-mediaos}
       PG_USER: ${PG_USER:-mediaos}
       PG_PASSWORD: ${PG_PASSWORD:-changeme_pg_password}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
     depends_on:
       - worker
     restart: unless-stopped
+    mem_limit: ${DASHBOARD_MEM_LIMIT:-512m}
+    cpus: ${DASHBOARD_CPUS:-1.0}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     networks:
       - mediaos
 

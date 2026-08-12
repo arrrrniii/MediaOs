@@ -1,17 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { adminFetch } from '@/lib/api';
+import { getAccountContext } from '@/lib/session';
+import { accountFetch } from '@/lib/api';
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session) {
+  const ctx = await getAccountContext();
+  if (!ctx) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // The worker derives the owning account from the session, so drop any
+  // account_id the browser sent rather than forwarding a rejected claim.
   const body = await req.json();
+  delete body.account_id;
+
   try {
-    const result = await adminFetch('/api/v1/projects', {
+    const result = await accountFetch(ctx, '/api/v1/projects', {
       method: 'POST',
       body: JSON.stringify(body),
     });

@@ -1,7 +1,7 @@
 const { Router } = require('express');
 const multer = require('multer');
 const auth = require('../middleware/auth');
-const { uploadFile } = require('../services/fileService');
+const { uploadFile, ACCESS_LEVELS } = require('../services/fileService');
 const config = require('../config');
 
 const router = Router();
@@ -10,6 +10,12 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: config.maxFileSize },
 });
+
+// Rejected up front so a bad access level fails the whole request instead of
+// every file in it individually.
+function invalidAccess(access) {
+  return access !== undefined && access !== null && access !== '' && !ACCESS_LEVELS.includes(access);
+}
 
 // POST /api/v1/upload — single file upload
 router.post('/api/v1/upload', auth('upload'), upload.single('file'), async (req, res, next) => {
@@ -26,7 +32,20 @@ router.post('/api/v1/upload', auth('upload'), upload.single('file'), async (req,
       name: req.query.name || req.body.name,
       access: req.query.access || req.body.access,
       apiKeyId: req.apiKey.id,
+      // Request correlation id (from requestId middleware) threaded into the
+      // enqueued media job so it traces back to this upload.
+      requestId: req.id,
+      // Idempotency-Key header: a repeated key returns the original file
+      // instead of storing a second copy.
+      idempotencyKey: req.headers['idempotency-key'] || req.query.idempotency_key,
     };
+
+    if (invalidAccess(options.access)) {
+      return res.status(400).json({
+        error: 'Invalid access level. Use: public, private, signed',
+        code: 'INVALID_ACCESS',
+      });
+    }
 
     const result = await uploadFile(req.file, req.project, options, req.app.locals.queue);
     const statusCode = result._statusCode || 200;
@@ -53,7 +72,15 @@ router.post('/api/v1/upload/bulk', auth('upload'), upload.array('files', 20), as
       folder: req.query.folder || req.body.folder,
       access: req.query.access || req.body.access,
       apiKeyId: req.apiKey.id,
+      requestId: req.id,
     };
+
+    if (invalidAccess(options.access)) {
+      return res.status(400).json({
+        error: 'Invalid access level. Use: public, private, signed',
+        code: 'INVALID_ACCESS',
+      });
+    }
 
     const results = [];
     const errors = [];
@@ -67,6 +94,7 @@ router.post('/api/v1/upload/bulk', auth('upload'), upload.array('files', 20), as
         errors.push({
           filename: file.originalname,
           error: err.message,
+          code: err.code || 'UPLOAD_FAILED',
         });
       }
     }
