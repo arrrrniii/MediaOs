@@ -78,7 +78,11 @@ services:
     build: ./worker
     container_name: mv-worker
     ports:
-      - "${API_PORT:-3000}:3000"
+      # Bind to loopback only: the dashboard and nginx reach the worker over
+      # the compose network (http://worker:3000), so the published port is for
+      # host-local access. Exposing it on 0.0.0.0 would let direct clients
+      # bypass nginx and spoof X-Forwarded-For against the rate limiters.
+      - "127.0.0.1:${API_PORT:-3000}:3000"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000

@@ -81,7 +81,10 @@ services:
     image: arrrrniii/mediaos:worker
     container_name: mv-worker
     ports:
-      - "${API_PORT:-3000}:3000"
+      # Loopback only — see docker-compose.yml for rationale (nginx/dashboard
+      # reach the worker over the compose network; direct exposure would let
+      # clients bypass nginx and spoof X-Forwarded-For against rate limiters).
+      - "127.0.0.1:${API_PORT:-3000}:3000"
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000

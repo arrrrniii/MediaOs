@@ -57,7 +57,13 @@ function setContentSafetyHeaders(res, { mimeType, type, filename }) {
   res.set('X-Content-Type-Options', 'nosniff');
 
   if (mimeType === 'image/svg+xml') {
+    // Defense in depth: the CSP sandbox blocks script execution, but SVG is
+    // still an active document format. Force it to download rather than render
+    // as a top-level document, so a payload that slips past the regex-based
+    // sanitizer cannot execute in the media origin. <img>-embedded SVGs never
+    // run scripts regardless, so this does not break legitimate image use.
     res.set('Content-Security-Policy', SVG_CSP);
+    res.set('Content-Disposition', contentDispositionFilename(filename));
   }
 
   // Non-media is never rendered inline in the CDN origin.

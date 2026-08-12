@@ -43,7 +43,13 @@ function createApp() {
   app.use(corsMiddleware);
 
   // Trust proxy for rate limiting
-  app.set('trust proxy', 1);
+  // Trust X-Forwarded-For only from private-range peers (nginx/compose
+  // network), never from a directly-connecting public client. A hop count of 1
+  // would trust the socket peer's XFF unconditionally, letting anyone reaching
+  // the worker directly spoof req.ip and mint a fresh rate-limit bucket per
+  // request. Combined with binding the published port to loopback (compose),
+  // this keeps the per-IP limiters honest.
+  app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
   // Health check (no auth)
   app.use(healthRoutes);
