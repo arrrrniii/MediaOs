@@ -531,6 +531,10 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
       tempKey,
       finalKey: storageKey,
       kind: passthrough ? 'video_passthrough' : 'video',
+      // Preserved so the pipeline can store the original video under its real
+      // mime/extension when the project's original_policy keeps/archives it.
+      originalMime: detected.mime,
+      originalExt: ext,
     };
     const queueModule = require('../queue');
     if (queueModule.isEnabled()) {
@@ -730,8 +734,9 @@ function formatResponse(row, projectId, objects = []) {
   }));
 
   const source = objectList.find((o) => o.role === 'source');
+  const hlsObj = objectList.find((o) => o.role === 'hls');
 
-  return {
+  const response = {
     id: row.id,
     project_id: projectId,
     filename: row.filename,
@@ -755,6 +760,18 @@ function formatResponse(row, projectId, objects = []) {
     processing_ms: row.processing_ms,
     created_at: row.created_at,
   };
+
+  // Video playback surface — only present once the HLS pipeline has run. The
+  // hls_url points at the master playlist; for private/signed videos it 403s
+  // without a token (sign it via /files/:id/signed-url on the master key).
+  if (row.type === 'video') {
+    response.has_hls = !!row.has_hls;
+    if (row.video_status) response.video_status = row.video_status;
+    if (row.has_hls && hlsObj) response.hls_url = `${config.publicUrl}/f/${hlsObj.storage_key}`;
+    if (row.poster_key) response.poster_url = `${config.publicUrl}/f/${row.poster_key}`;
+  }
+
+  return response;
 }
 
 async function deleteFile(fileId, project) {
@@ -946,7 +963,27 @@ async function getFile(fileId, project) {
   try {
     objects = await fileObjectService.listObjects(fileId);
   } catch { /* objects are optional */ }
-  return formatResponse(rows[0], project.id, objects);
+  const response = formatResponse(rows[0], project.id, objects);
+
+  // Attach subtitle tracks for videos. Signed/private videos get signed track
+  // URLs, so ensure we have the project's signing secret.
+  if (rows[0].type === 'video') {
+    try {
+      const videoService = require('./videoService');
+      const subtitles = await videoService.listSubtitles(fileId);
+      if (subtitles.length > 0) {
+        let signingProject = project;
+        if (rows[0].access !== 'public' && !project.signing_secret) {
+          const { rows: pr } = await query('SELECT signing_secret FROM projects WHERE id = $1', [project.id]);
+          signingProject = { ...project, signing_secret: pr[0] && pr[0].signing_secret };
+        }
+        response.tracks = videoService.buildTracks(signingProject, rows[0], subtitles);
+      } else {
+        response.tracks = [];
+      }
+    } catch { /* tracks are optional */ }
+  }
+  return response;
 }
 
 /**
@@ -1021,4 +1058,8 @@ module.exports = {
   // idempotency bookkeeping as the normal upload path.
   findByIdempotencyKey,
   recordIdempotency,
+  // Exported for the video pipeline, which applies the same original-policy to
+  // the source video after its renditions are verified.
+  getOriginalPolicy,
+  buildStorageKey,
 };

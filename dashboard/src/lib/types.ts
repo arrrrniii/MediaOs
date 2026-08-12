@@ -94,6 +94,29 @@ export interface FileRecord {
   processing_ms: number;
   created_at: string;
   updated_at: string;
+  // Video (Phase 8b): present once the HLS pipeline has run.
+  has_hls?: boolean;
+  video_status?: string;
+  hls_url?: string;
+  poster_url?: string;
+  tracks?: VideoTrack[];
+}
+
+export interface VideoTrack {
+  lang: string;
+  label: string;
+  url: string;
+  format?: string;
+}
+
+export interface PlaybackAnalytics {
+  file_id: string;
+  window_days: number;
+  by_event: Record<string, number>;
+  plays: number;
+  completions: number;
+  completion_rate: number;
+  plays_over_time: { day: string; plays: number }[];
 }
 
 export interface Webhook {

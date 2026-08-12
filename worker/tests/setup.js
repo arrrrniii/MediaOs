@@ -226,6 +226,23 @@ jest.mock('../src/services/videoProcessor', () => ({
   gifToMp4: jest.fn(async () => ({ path: '/tmp/gif.mp4', size: 3000 })),
   cleanup: jest.fn(),
   tmpPath: jest.fn((ext) => `/tmp/mv-test${ext}`),
+  probeVideo: jest.fn(async () => ({ duration: 10.5, width: 1280, height: 720, hasAudio: true })),
+  transcodeHls: jest.fn(async () => ({
+    masterPath: '/tmp/hls/master.m3u8',
+    posterPath: '/tmp/hls/poster.jpg',
+    renditions: [
+      { height: 360, width: 640, vbitrate: 800000, abitrate: 96000, bandwidth: 952000,
+        codecs: 'avc1.4d401f,mp4a.40.2', dir: '/tmp/hls/360p', playlistName: 'index.m3u8',
+        playlistPath: '/tmp/hls/360p/index.m3u8', segmentFiles: ['seg_000.ts'], bytes: 12000 },
+      { height: 720, width: 1280, vbitrate: 2800000, abitrate: 128000, bandwidth: 3124000,
+        codecs: 'avc1.4d401f,mp4a.40.2', dir: '/tmp/hls/720p', playlistName: 'index.m3u8',
+        playlistPath: '/tmp/hls/720p/index.m3u8', segmentFiles: ['seg_000.ts'], bytes: 40000 },
+    ],
+    duration: 10.5, width: 1280, height: 720, hasAudio: true,
+  })),
+  selectRenditions: jest.requireActual('../src/services/videoProcessor').selectRenditions,
+  HLS_LADDER: jest.requireActual('../src/services/videoProcessor').HLS_LADDER,
+  HLS_SEGMENT_SECONDS: 6,
 }));
 
 // ── Mock usage service (fire-and-forget) ─────────────────

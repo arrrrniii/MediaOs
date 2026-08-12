@@ -129,3 +129,37 @@ describe('006_logical_assets.sql', () => {
     expect(sql).toMatch(/INSERT INTO file_objects[\s\S]*'thumbnail'[\s\S]*FROM files f\s*WHERE f\.thumbnail_key IS NOT NULL/);
   });
 });
+
+describe('012_video.sql', () => {
+  const sql = fs.readFileSync(
+    path.join(MIGRATIONS_DIR, '012_video.sql'),
+    'utf8'
+  );
+
+  it('should create video_renditions with a per-file, per-height uniqueness', () => {
+    expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS video_renditions/);
+    expect(sql).toMatch(/file_id\s+UUID NOT NULL REFERENCES files\(id\) ON DELETE CASCADE/);
+    expect(sql).toMatch(/CHECK \(status IN \('pending', 'ready', 'failed'\)\)/);
+    expect(sql).toMatch(/UNIQUE \(file_id, height\)/);
+  });
+
+  it('should create subtitles with a per-file, per-language uniqueness', () => {
+    expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS subtitles/);
+    expect(sql).toMatch(/lang\s+VARCHAR\(10\) NOT NULL/);
+    expect(sql).toMatch(/UNIQUE \(file_id, lang\)/);
+  });
+
+  it('should create video_playback_events with a bounded event enum', () => {
+    expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS video_playback_events/);
+    expect(sql).toMatch(/CHECK \(event IN \('play', 'pause', 'ended', 'seek', 'error', 'segment'\)\)/);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS idx_video_playback_events_file/);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS idx_video_playback_events_project/);
+  });
+
+  it('should add has_hls, video_status, and poster_key to files idempotently', () => {
+    expect(sql).toMatch(/ALTER TABLE files ADD COLUMN IF NOT EXISTS has_hls BOOLEAN NOT NULL DEFAULT FALSE/);
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS video_status VARCHAR\(20\)/);
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS poster_key VARCHAR\(500\)/);
+    expect(sql).not.toMatch(/DROP COLUMN/);
+  });
+});

@@ -11,6 +11,7 @@ const uploadRoutes = require('./routes/upload');
 const uploadsRoutes = require('./routes/uploads');
 const deliveryRoutes = require('./routes/delivery');
 const fileRoutes = require('./routes/files');
+const videoRoutes = require('./routes/video');
 const serveRoutes = require('./routes/serve');
 const webhookRoutes = require('./routes/webhooks');
 const usageRoutes = require('./routes/usage');
@@ -93,6 +94,9 @@ function createApp() {
   app.use(uploadRoutes);
   app.use(uploadsRoutes);
   app.use(fileRoutes);
+
+  // Video: subtitles, playback beacons + analytics (session + API-key scoped).
+  app.use(videoRoutes);
 
   // Webhook & usage routes (API key auth)
   app.use(webhookRoutes);

@@ -1,6 +1,8 @@
 const { Router } = require('express');
 const { query } = require('../db');
-const { validateOriginal, validateTransform, validateVariant } = require('../services/signedUrl');
+const {
+  validateOriginal, validateTransform, validateVariant, rewriteHlsPlaylist,
+} = require('../services/signedUrl');
 const { trackDownload, trackTransform, trackBandwidth } = require('../services/usageService');
 const { recordAccess } = require('../services/accessTrackingService');
 const fileObjectService = require('../services/fileObjectService');
@@ -164,6 +166,172 @@ function setContentSafetyHeaders(res, { mimeType, type, filename }) {
     res.set('Content-Disposition', contentDispositionFilename(filename));
   }
 }
+
+// ── HLS + video-derivative serving ──────────────────────
+// Video renditions live under `{fileBase}/hls/…` and are NOT rows in `files`
+// (only the master/media playlists + poster are file_objects). They are served
+// here: the owning file is resolved from the deterministic prefix, access is
+// enforced exactly like /f/, and for signed/private videos the playlist body
+// is rewritten so every child playlist + segment carries its own token.
+
+const HLS_MIME = 'application/vnd.apple.mpegurl';
+// Playlists are cheap to regenerate and must not pin a stale token; segments
+// are immutable content addressed by name, so they cache forever.
+const HLS_PLAYLIST_CACHE = 'public, max-age=60';
+const HLS_SEGMENT_CACHE = 'public, max-age=31536000, immutable';
+
+const AUX_IMAGE_MIME = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp',
+};
+
+function collectStream(stream) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on('data', (c) => chunks.push(c));
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+    stream.on('error', reject);
+  });
+}
+
+/**
+ * Caching + CORS for a video-derivative response. Signed/private objects are
+ * never stored by a shared cache (a cached copy would outlive its token).
+ */
+function setHlsCache(res, access, kind) {
+  res.set('X-Content-Type-Options', 'nosniff');
+  if (isPublicAccess(access)) {
+    const cache = kind === 'segment' ? HLS_SEGMENT_CACHE : HLS_PLAYLIST_CACHE;
+    res.set('Cache-Control', cache);
+    res.set('CDN-Cache-Control', cache);
+    res.set('Access-Control-Allow-Origin', '*');
+  } else {
+    res.set('Cache-Control', PRIVATE_CACHE);
+    res.set('CDN-Cache-Control', 'no-store');
+    res.set('Surrogate-Control', 'no-store');
+    res.set('Vary', 'Authorization');
+    res.removeHeader('Access-Control-Allow-Origin');
+  }
+}
+
+async function serveHls(req, res, next) {
+  try {
+    const projectId = req.params.projectId;
+    const remainder = req.params[0];
+    const storageKey = `${projectId}/${remainder}`;
+
+    const idx = remainder.indexOf('/hls/');
+    if (idx === -1) return next(); // not a video-derivative path — fall through
+
+    const ext = (remainder.split('.').pop() || '').toLowerCase();
+    const isPlaylist = ext === 'm3u8';
+    const isSegment = ext === 'ts' || ext === 'm4s';
+    const isVtt = ext === 'vtt';
+    const isImage = !!AUX_IMAGE_MIME[ext];
+    if (!isPlaylist && !isSegment && !isVtt && !isImage) return next();
+
+    // Resolve the owning file from the deterministic prefix: everything up to
+    // `/hls/` is the file's storage key minus its `.mp4` extension.
+    const fileStorageKey = `${projectId}/${remainder.slice(0, idx)}.mp4`;
+    const { rows } = await query(
+      `SELECT f.id, f.access, f.project_id, f.type, p.signing_secret
+         FROM files f JOIN projects p ON f.project_id = p.id
+        WHERE f.storage_key = $1 AND f.deleted_at IS NULL`,
+      [fileStorageKey]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'File not found', code: 'NOT_FOUND' });
+    }
+    const file = rows[0];
+
+    // Access control — identical to /f/. Each object (playlist/segment/poster/
+    // subtitle) is signed over its OWN storage key, so the token the player
+    // presents must validate against this exact key.
+    const expires = req.query.expires;
+    if (file.access === 'private' || file.access === 'signed') {
+      const token = req.query.token;
+      if (!token || !expires) {
+        return res.status(403).json({ error: 'Access denied. This file requires a signed URL.', code: 'ACCESS_DENIED' });
+      }
+      if (!validateOriginal(file.signing_secret, storageKey, token, expires)) {
+        const isExpired = parseInt(expires) < Math.floor(Date.now() / 1000);
+        return res.status(403).json({
+          error: isExpired ? 'Signed URL has expired' : 'Invalid signature',
+          code: isExpired ? 'URL_EXPIRED' : 'INVALID_SIGNATURE',
+        });
+      }
+    }
+
+    const backend = await storageBackendService.getDefaultBackend();
+    const sclient = storageBackendService.getBackendClient(backend);
+
+    let stat;
+    try {
+      stat = await sclient.statObject(storageKey);
+    } catch {
+      return res.status(404).json({ error: 'File not found in storage', code: 'STORAGE_NOT_FOUND' });
+    }
+
+    // ── Playlist (master or media) ──────────────────────
+    if (isPlaylist) {
+      const stream = await sclient.getObject(storageKey);
+      let body = (await collectStream(stream)).toString('utf8');
+      // Signed/private: rewrite child URIs so each carries a token over its own
+      // key and the SAME expiry, so the whole session shares one deadline.
+      if ((file.access === 'private' || file.access === 'signed') && expires) {
+        const dir = storageKey.slice(0, storageKey.lastIndexOf('/'));
+        body = rewriteHlsPlaylist(body, dir, file.signing_secret, expires);
+      }
+      res.set('Content-Type', HLS_MIME);
+      setHlsCache(res, file.access, 'playlist');
+      res.set('Content-Length', Buffer.byteLength(body));
+      recordAccess(file.id, 'video_play');
+      return res.send(body);
+    }
+
+    // ── Segment / VTT / poster — byte streams (Range for segments) ──
+    const contentType = isSegment
+      ? (ext === 'm4s' ? 'video/iso.segment' : 'video/MP2T')
+      : isVtt ? 'text/vtt' : (AUX_IMAGE_MIME[ext] || 'application/octet-stream');
+
+    res.set('Content-Type', contentType);
+    setHlsCache(res, file.access, isSegment ? 'segment' : 'aux');
+    if (stat.etag) res.set('ETag', stat.etag);
+    res.set('Accept-Ranges', 'bytes');
+
+    if (stat.etag && req.headers['if-none-match'] === stat.etag) {
+      return res.status(304).end();
+    }
+
+    const range = req.headers.range;
+    if (range && isSegment) {
+      const total = stat.size;
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+      if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end < start || start >= total || end >= total) {
+        return res.status(416).set('Content-Range', `bytes */${total}`).end();
+      }
+      const bytesServed = end - start + 1;
+      res.status(206);
+      res.set('Content-Range', `bytes ${start}-${end}/${total}`);
+      res.set('Content-Length', bytesServed);
+      const pstream = await sclient.getPartialObject(storageKey, start, bytesServed);
+      pstream.pipe(res);
+      trackBandwidth(file.project_id, file.id, bytesServed);
+      return;
+    }
+
+    res.set('Content-Length', stat.size);
+    const stream = await sclient.getObject(storageKey);
+    stream.pipe(res);
+    trackBandwidth(file.project_id, file.id, stat.size);
+    if (isSegment) recordAccess(file.id, 'video_play');
+  } catch (err) {
+    next(err);
+  }
+}
+
+router.get('/f/:projectId/*', serveHls);
 
 // GET /f/:projectId/* — serve file from MinIO
 router.get('/f/:projectId/*', async (req, res, next) => {

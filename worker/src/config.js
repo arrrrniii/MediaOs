@@ -52,6 +52,9 @@ module.exports = {
   maxHeight: parseInt(process.env.MAX_HEIGHT || '1600'),
   videoCrf: process.env.VIDEO_CRF || '20',
   videoMaxHeight: parseInt(process.env.VIDEO_MAX_HEIGHT || '1080'),
+  // Per-job wall clock for video processing (HLS ladder + progressive + poster).
+  // Generous because a multi-rendition transcode of a long clip is slow.
+  videoJobTimeoutMs: parseInt(process.env.VIDEO_JOB_TIMEOUT_MS || String(30 * 60 * 1000), 10),
   maxFileSize: parseInt(process.env.MAX_FILE_SIZE || '104857600'),
   concurrency: parseInt(process.env.CONCURRENCY || '3'),
 

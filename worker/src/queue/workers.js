@@ -26,7 +26,9 @@ const { processArchiveJob } = require('./processors/archive');
 const { processRestoreJob } = require('./processors/restore');
 const webhookService = require('../services/webhookService');
 
-const MEDIA_TIMEOUT_MS = parseInt(process.env.MEDIA_JOB_TIMEOUT_MS || '900000', 10); // 15 min
+// Video HLS transcodes are slow; default the media job timeout to the generous
+// video knob (30 min) unless MEDIA_JOB_TIMEOUT_MS is set explicitly.
+const MEDIA_TIMEOUT_MS = parseInt(process.env.MEDIA_JOB_TIMEOUT_MS || String(config.videoJobTimeoutMs), 10);
 const OUTBOX_POLL_MS = parseInt(process.env.OUTBOX_POLL_MS || '2000', 10);
 // Daily lifecycle scan. Cron pattern; default 03:00 every day.
 const LIFECYCLE_SCAN_CRON = process.env.LIFECYCLE_SCAN_CRON || '0 3 * * *';

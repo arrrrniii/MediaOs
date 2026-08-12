@@ -215,8 +215,8 @@ async function checkStuckProcessing(runId) {
     if (isEnabled()) {
       try {
         const { Job } = require('bullmq');
-        const { getQueue, recordJobActive } = require('../queue');
-        const jobId = `media:${file.id}`;
+        const { getQueue, recordJobActive, sanitizeJobId } = require('../queue');
+        const jobId = sanitizeJobId(`media:${file.id}`);
         const q = getQueue(QUEUES.MEDIA);
         const job = q ? await Job.fromId(q, jobId) : null;
         if (job) {

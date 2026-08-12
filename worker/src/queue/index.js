@@ -76,13 +76,15 @@ function getQueue(name) {
  */
 async function recordJobActive(queueName, jobId, fileId) {
   try {
+    // Store the same id BullMQ uses (':' normalized), so ledger lookups by
+    // job.id and by a reconstructed logical id both resolve to one row.
     await query(
       `INSERT INTO job_attempts (queue, job_id, file_id, status, attempt, error, finished_at)
        VALUES ($1, $2, $3, 'active', 1, NULL, NULL)
        ON CONFLICT (queue, job_id) DO UPDATE
          SET status = 'active', attempt = 1, error = NULL, finished_at = NULL,
              file_id = COALESCE(EXCLUDED.file_id, job_attempts.file_id)`,
-      [queueName, jobId, fileId || null]
+      [queueName, sanitizeJobId(jobId), fileId || null]
     );
   } catch (err) {
     console.error(`Failed to record job_attempts for ${queueName}/${jobId}:`, err.message);
@@ -97,9 +99,20 @@ async function recordJobActive(queueName, jobId, fileId) {
  * @param {object} [opts]  BullMQ job opts; opts.jobId gives idempotency
  * @returns the added BullMQ Job
  */
+// BullMQ forbids ':' in a custom job id (it is the internal key delimiter).
+// Call sites use readable ids like `media:<uuid>`; normalize them to a safe,
+// still-deterministic form so idempotency (same logical id -> same job) holds.
+function sanitizeJobId(jobId) {
+  if (jobId == null) return jobId;
+  return String(jobId).replace(/:/g, '-');
+}
+
 async function addJob(name, jobName, data = {}, opts = {}) {
   const queue = getQueue(name);
-  const job = await queue.add(jobName, data, { ...opts });
+  const safeOpts = opts.jobId != null
+    ? { ...opts, jobId: sanitizeJobId(opts.jobId) }
+    : { ...opts };
+  const job = await queue.add(jobName, data, safeOpts);
   await recordJobActive(name, job.id, data.fileId);
   return job;
 }
@@ -122,6 +135,7 @@ module.exports = {
   getConnection,
   getQueue,
   addJob,
+  sanitizeJobId,
   recordJobActive,
   closeAll,
   isEnabled,
