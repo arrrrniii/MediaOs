@@ -1,11 +1,35 @@
 const { Router } = require('express');
 const { query } = require('../db');
-const { getObject, getPartialObject, statObject } = require('../minio');
 const { validateOriginal, validateTransform } = require('../services/signedUrl');
 const { trackDownload, trackTransform, trackBandwidth } = require('../services/usageService');
+const fileObjectService = require('../services/fileObjectService');
+const storageBackendService = require('../services/storageBackendService');
 const config = require('../config');
 
 const router = Router();
+
+/**
+ * Resolve which physical object to stream for a logical file, and the
+ * storage client that holds it. Reads the logical asset model
+ * (file_objects), preferring the optimized rendition and falling back to the
+ * preserved source. When a file has no objects yet (rows uploaded before
+ * migration 006's backfill, or a bookkeeping gap), fall back to the legacy
+ * files.storage_key on the default backend so serving never regresses.
+ */
+async function resolveStreamTarget(file, requestedKey) {
+  try {
+    let obj = await fileObjectService.getObjectByRole(file.id, 'optimized');
+    if (!obj) obj = await fileObjectService.getObjectByRole(file.id, 'source');
+    if (obj && obj.storage_key) {
+      const backend = await storageBackendService.getBackendById(obj.storage_backend_id);
+      return { key: obj.storage_key, client: storageBackendService.getBackendClient(backend) };
+    }
+  } catch {
+    // fall through to the legacy key on the default backend
+  }
+  const backend = await storageBackendService.getDefaultBackend();
+  return { key: requestedKey, client: storageBackendService.getBackendClient(backend) };
+}
 
 // Upper bound on imgproxy output dimensions, so a URL cannot ask the origin to
 // render an arbitrarily large image.
@@ -131,10 +155,14 @@ router.get('/f/:projectId/*', async (req, res, next) => {
       `);
     }
 
+    // Resolve the physical object + backend to stream from (logical asset
+    // model), falling back to the legacy key on the default backend.
+    const target = await resolveStreamTarget(file, storageKey);
+
     // Get object stat for headers
     let stat;
     try {
-      stat = await statObject(storageKey);
+      stat = await target.client.statObject(target.key);
     } catch {
       return res.status(404).json({
         error: 'File not found in storage',
@@ -177,7 +205,7 @@ router.get('/f/:projectId/*', async (req, res, next) => {
       res.set('Content-Range', `bytes ${start}-${end}/${total}`);
       res.set('Content-Length', bytesServed);
 
-      const stream = await getPartialObject(storageKey, start, bytesServed);
+      const stream = await target.client.getPartialObject(target.key, start, bytesServed);
       stream.pipe(res);
 
       // Track download usage (fire-and-forget)
@@ -185,7 +213,7 @@ router.get('/f/:projectId/*', async (req, res, next) => {
       trackBandwidth(file.project_id, file.id, bytesServed);
     } else {
       res.set('Content-Length', stat.size);
-      const stream = await getObject(storageKey);
+      const stream = await target.client.getObject(target.key);
       stream.pipe(res);
 
       // Track download usage (fire-and-forget)

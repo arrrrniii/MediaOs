@@ -3,23 +3,43 @@ const fs = require('fs');
 const crypto = require('crypto');
 const sharp = require('sharp');
 const { query } = require('../db');
-const { putBuffer, putFile, removeObject, getObject } = require('../minio');
 const { processImage, isAnimatedGif } = require('./imageProcessor');
 const { transcodeVideo, extractThumbnail, getVideoDuration, cleanup, tmpPath } = require('./videoProcessor');
 const { slugify } = require('../utils/slugify');
 const { detectFileType, isDangerous, sanitizeSvg, svgHasActiveContent } = require('../utils/fileType');
 const { trackUpload, trackDelete } = require('./usageService');
 const { dispatch: dispatchWebhook } = require('./webhookService');
+const fileObjectService = require('./fileObjectService');
+const storageBackendService = require('./storageBackendService');
 const config = require('../config');
 
 const ACCESS_LEVELS = ['public', 'private', 'signed'];
+const ORIGINAL_POLICIES = ['keep', 'archive', 'temporary', 'discard'];
 
 // Decompression-bomb guards, applied to image metadata before any pixel work.
 const MAX_IMAGE_PIXELS = parseInt(process.env.MAX_IMAGE_PIXELS || '50000000', 10);
 const MAX_IMAGE_DIMENSION = parseInt(process.env.MAX_IMAGE_DIMENSION || '16383', 10);
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 function nanoid(size = 6) {
   return crypto.randomBytes(size).toString('hex').substring(0, size);
+}
+
+function sha256(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+// Streamed hash for on-disk renditions (video), so large files are not
+// buffered into memory just to checksum them.
+function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
 }
 
 function sanitizeFolder(folder) {
@@ -69,6 +89,35 @@ function resolveAccess(options, project) {
   }
   const fallback = project.settings?.default_access;
   return ACCESS_LEVELS.includes(fallback) ? fallback : 'public';
+}
+
+/**
+ * Original-preservation policy for a project. Lives in
+ * project.settings.original_policy; missing/invalid fields fall back to the
+ * defaults, and the 'discard' default reproduces the legacy behaviour
+ * (optimized copy only, no source kept).
+ */
+function getOriginalPolicy(project) {
+  // Accept two shapes so the setting is forgiving of how it was written:
+  //   settings.original_policy = "keep"                       (bare mode string)
+  //   settings.original_policy = { original_policy: "keep", … } (policy object)
+  // In the string form, the sibling fields live directly on settings.
+  const raw = project.settings?.original_policy;
+  const isString = typeof raw === 'string';
+  const p = isString ? {} : (raw || {});
+  const container = isString ? (project.settings || {}) : p;
+
+  const modeValue = isString ? raw : p.original_policy;
+  const mode = ORIGINAL_POLICIES.includes(modeValue) ? modeValue : 'discard';
+  const days = Number.isFinite(container.archive_original_after_days)
+    ? container.archive_original_after_days
+    : 30;
+  return {
+    mode,
+    archiveAfterDays: days,
+    optimizedFormats: Array.isArray(container.optimized_formats) ? container.optimized_formats : ['webp'],
+    preserveMetadata: container.preserve_metadata === true,
+  };
 }
 
 function assertTypeAllowed(project, category) {
@@ -133,11 +182,33 @@ function inspectUpload(buffer, originalName) {
   return { detected, buffer };
 }
 
+/**
+ * Confirm bytes actually landed in storage at the expected size before we
+ * mark an object available. A mismatch means a truncated/failed write and
+ * fails the whole upload rather than recording a corrupt object.
+ */
+async function verifyStoredObject(client, storageKey, expectedSize) {
+  let stat;
+  try {
+    stat = await client.statObject(storageKey);
+  } catch {
+    throw uploadError(500, 'STORAGE_VERIFY_FAILED', 'Stored object could not be verified after write');
+  }
+  if (
+    expectedSize != null &&
+    typeof stat?.size === 'number' &&
+    stat.size !== expectedSize
+  ) {
+    throw uploadError(500, 'STORAGE_VERIFY_FAILED', 'Stored object size does not match the uploaded bytes');
+  }
+}
+
 async function uploadFile(file, project, options = {}, queue = null) {
   const start = Date.now();
   const access = resolveAccess(options, project);
   const slug = slugify(options.name || file.originalname);
   const folder = sanitizeFolder(options.folder);
+  const policy = getOriginalPolicy(project);
 
   const { detected, buffer } = inspectUpload(file.buffer, file.originalname);
   const ext = detected.ext;
@@ -146,86 +217,160 @@ async function uploadFile(file, project, options = {}, queue = null) {
   assertWithinSizeLimit(project, buffer.length);
   assertTypeAllowed(project, detected.category);
 
+  const backend = await storageBackendService.getDefaultBackend();
+  const client = storageBackendService.getBackendClient(backend);
+
   if (detected.category === 'image') {
     // SVG is stored as sanitized source; rasterizing it would lose its point.
+    // The stored object *is* the source, so it is recorded with role 'source'.
     if (detected.mime === 'image/svg+xml') {
       const storageKey = buildStorageKey(project.id, folder, slug, 'svg');
       let metadata = null;
       try {
         metadata = await sharp(buffer).metadata();
       } catch { /* dimensions are optional for SVG */ }
-      await putBuffer(storageKey, buffer, 'image/svg+xml');
+      const checksum = sha256(buffer);
+
+      await client.putBuffer(storageKey, buffer, 'image/svg+xml');
+      await verifyStoredObject(client, storageKey, buffer.length);
 
       const processingMs = Date.now() - start;
       const row = await insertFileRecord({
         projectId: project.id, storageKey, filename: path.basename(storageKey),
         originalName: file.originalname, folder, type: 'image', mimeType: 'image/svg+xml',
-        size: buffer.length, originalSize,
+        size: buffer.length, originalSize, checksum,
         width: metadata?.width || null, height: metadata?.height || null,
         status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
       });
-      await updateProjectCounters(project.id, buffer.length);
-      const svgResponse = formatResponse(row, project.id);
-      trackUpload(project.id, buffer.length).catch(() => {});
+
+      const objects = [
+        await recordObject(row.id, backend, {
+          role: 'source', storageKey, mimeType: 'image/svg+xml', size: buffer.length,
+          checksum, width: metadata?.width, height: metadata?.height,
+        }),
+      ];
+
+      const storedBytes = sumObjectBytes(objects);
+      await updateProjectCounters(project.id, storedBytes);
+      const svgResponse = formatResponse(row, project.id, objects);
+      trackUpload(project.id, storedBytes).catch(() => {});
       dispatchWebhook(project.id, 'file.uploaded', svgResponse).catch(() => {});
       return svgResponse;
     }
 
     const imageMetadata = await imageMetadataWithinLimits(buffer);
 
-    // Animated GIF -> store as-is (preserve animation)
+    // Animated GIF -> store as-is (preserve animation). The stored object is
+    // the source; nothing is optimized.
     const animated = detected.mime === 'image/gif' && await isAnimatedGif(buffer);
     if (animated) {
       const storageKey = buildStorageKey(project.id, folder, slug, 'gif');
-      await putBuffer(storageKey, buffer, 'image/gif');
+      const checksum = sha256(buffer);
+
+      await client.putBuffer(storageKey, buffer, 'image/gif');
+      await verifyStoredObject(client, storageKey, buffer.length);
 
       const processingMs = Date.now() - start;
       const row = await insertFileRecord({
         projectId: project.id, storageKey, filename: path.basename(storageKey),
         originalName: file.originalname, folder, type: 'image', mimeType: 'image/gif',
-        size: buffer.length, originalSize,
+        size: buffer.length, originalSize, checksum,
         width: imageMetadata?.width || null, height: imageMetadata?.height || null,
         status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
       });
-      await updateProjectCounters(project.id, buffer.length);
-      const response = formatResponse(row, project.id);
-      trackUpload(project.id, buffer.length).catch(() => {});
+
+      const objects = [
+        await recordObject(row.id, backend, {
+          role: 'source', storageKey, mimeType: 'image/gif', size: buffer.length,
+          checksum, width: imageMetadata?.width, height: imageMetadata?.height,
+        }),
+      ];
+
+      const storedBytes = sumObjectBytes(objects);
+      await updateProjectCounters(project.id, storedBytes);
+      const response = formatResponse(row, project.id, objects);
+      trackUpload(project.id, storedBytes).catch(() => {});
       dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
       return response;
     }
 
-    // Regular image -> WebP
+    // Regular image -> WebP. The WebP is the optimized/canonical object; the
+    // pre-optimization bytes are the source, preserved when policy != discard.
     const result = await processImage(buffer, {
       maxWidth: project.settings?.max_width || config.maxWidth,
       maxHeight: project.settings?.max_height || config.maxHeight,
       quality: project.settings?.webp_quality || config.webpQuality,
     });
 
+    const sourceChecksum = sha256(buffer);
+    const optimizedChecksum = sha256(result.buffer);
+    const keepSource = policy.mode !== 'discard';
+
+    const objects = [];
+    let retentionUntil = null;
+
+    if (keepSource) {
+      const srcExt = (ext || '').replace(/^\./, '') || 'bin';
+      const sourceKey = buildStorageKey(project.id, folder, slug, srcExt);
+      const sourceMeta = {};
+      if (policy.mode === 'archive') {
+        // Movement to a cold tier is Phase 5/6; here we only record intent.
+        sourceMeta.archive_after = new Date(Date.now() + policy.archiveAfterDays * DAY_MS).toISOString();
+      }
+      if (policy.mode === 'temporary') {
+        retentionUntil = new Date(Date.now() + policy.archiveAfterDays * DAY_MS);
+        sourceMeta.delete_after = retentionUntil.toISOString();
+      }
+
+      await client.putBuffer(sourceKey, buffer, detected.mime);
+      await verifyStoredObject(client, sourceKey, buffer.length);
+      objects.push({
+        __pending: { role: 'source', storageKey: sourceKey, mimeType: detected.mime, size: buffer.length, checksum: sourceChecksum, width: imageMetadata?.width, height: imageMetadata?.height, metadata: sourceMeta },
+      });
+    }
+
     const storageKey = buildStorageKey(project.id, folder, slug, 'webp');
-    await putBuffer(storageKey, result.buffer, 'image/webp');
+    await client.putBuffer(storageKey, result.buffer, 'image/webp');
+    await verifyStoredObject(client, storageKey, result.size);
+    objects.push({
+      __pending: { role: 'optimized', storageKey, mimeType: 'image/webp', size: result.size, checksum: optimizedChecksum, width: result.width, height: result.height },
+    });
+
+    // files.checksum is the source/canonical checksum: the source when kept,
+    // otherwise the canonical optimized rendition.
+    const canonicalChecksum = keepSource ? sourceChecksum : optimizedChecksum;
 
     const processingMs = Date.now() - start;
     const row = await insertFileRecord({
       projectId: project.id, storageKey, filename: path.basename(storageKey),
       originalName: file.originalname, folder, type: 'image', mimeType: 'image/webp',
-      size: result.size, originalSize, width: result.width,
+      size: result.size, originalSize, width: result.width, checksum: canonicalChecksum,
       height: result.height, status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
+      retentionUntil,
     });
-    await updateProjectCounters(project.id, result.size);
-    const response = formatResponse(row, project.id);
-    trackUpload(project.id, originalSize).catch(() => {});
+
+    const recorded = [];
+    for (const o of objects) {
+      recorded.push(await recordObject(row.id, backend, o.__pending));
+    }
+
+    const storedBytes = sumObjectBytes(recorded);
+    await updateProjectCounters(project.id, storedBytes);
+    const response = formatResponse(row, project.id, recorded);
+    trackUpload(project.id, storedBytes).catch(() => {});
     dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
     return response;
   }
 
   if (detected.category === 'video') {
-    // Store temp original, return 202, enqueue processing
+    // Store temp original, return 202, enqueue processing. Physical objects
+    // (mp4 rendition + thumbnail) are recorded when processing completes.
     const passthrough = detected.mime === 'video/mp4';
     const storageKey = buildStorageKey(project.id, folder, slug, 'mp4');
     const tempKey = `_processing_${crypto.randomBytes(8).toString('hex')}${ext}`;
 
     // Store temp in MinIO
-    await putBuffer(tempKey, buffer, detected.mime);
+    await client.putBuffer(tempKey, buffer, detected.mime);
 
     const processingMs = Date.now() - start;
     const row = await insertFileRecord({
@@ -244,16 +389,18 @@ async function uploadFile(file, project, options = {}, queue = null) {
       });
     }
 
-    const response = formatResponse(row, project.id);
+    const response = formatResponse(row, project.id, []);
     trackUpload(project.id, originalSize).catch(() => {});
     dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
     return { ...response, _statusCode: 202 };
   }
 
   if (detected.category === 'audio') {
-    // Store as-is, extract duration
+    // Store as-is, extract duration. The stored object is the source.
     const storageKey = buildStorageKey(project.id, folder, slug, ext.substring(1));
-    await putBuffer(storageKey, buffer, detected.mime);
+    const checksum = sha256(buffer);
+    await client.putBuffer(storageKey, buffer, detected.mime);
+    await verifyStoredObject(client, storageKey, buffer.length);
 
     // Try to get duration
     let duration = null;
@@ -268,30 +415,48 @@ async function uploadFile(file, project, options = {}, queue = null) {
     const row = await insertFileRecord({
       projectId: project.id, storageKey, filename: path.basename(storageKey),
       originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
-      size: buffer.length, originalSize, duration,
+      size: buffer.length, originalSize, duration, checksum,
       status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
     });
-    await updateProjectCounters(project.id, buffer.length);
-    const audioResponse = formatResponse(row, project.id);
-    trackUpload(project.id, originalSize).catch(() => {});
+
+    const objects = [
+      await recordObject(row.id, backend, {
+        role: 'source', storageKey, mimeType: detected.mime, size: buffer.length, checksum,
+      }),
+    ];
+
+    const storedBytes = sumObjectBytes(objects);
+    await updateProjectCounters(project.id, storedBytes);
+    const audioResponse = formatResponse(row, project.id, objects);
+    trackUpload(project.id, storedBytes).catch(() => {});
     dispatchWebhook(project.id, 'file.uploaded', audioResponse).catch(() => {});
     return audioResponse;
   }
 
-  // Generic file — store as-is
+  // Generic file — store as-is. The stored object is the source.
   const storageKey = buildStorageKey(project.id, folder, slug, ext.substring(1) || 'bin');
-  await putBuffer(storageKey, buffer, detected.mime);
+  const checksum = sha256(buffer);
+  await client.putBuffer(storageKey, buffer, detected.mime);
+  await verifyStoredObject(client, storageKey, buffer.length);
 
   const processingMs = Date.now() - start;
   const row = await insertFileRecord({
     projectId: project.id, storageKey, filename: path.basename(storageKey),
     originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
-    size: buffer.length, originalSize,
+    size: buffer.length, originalSize, checksum,
     status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
   });
-  await updateProjectCounters(project.id, buffer.length);
-  const fileResponse = formatResponse(row, project.id);
-  trackUpload(project.id, originalSize).catch(() => {});
+
+  const objects = [
+    await recordObject(row.id, backend, {
+      role: 'source', storageKey, mimeType: detected.mime, size: buffer.length, checksum,
+    }),
+  ];
+
+  const storedBytes = sumObjectBytes(objects);
+  await updateProjectCounters(project.id, storedBytes);
+  const fileResponse = formatResponse(row, project.id, objects);
+  trackUpload(project.id, storedBytes).catch(() => {});
   dispatchWebhook(project.id, 'file.uploaded', fileResponse).catch(() => {});
   return fileResponse;
 }
@@ -299,10 +464,12 @@ async function uploadFile(file, project, options = {}, queue = null) {
 async function processVideoAsync(fileId, project, tempKey, finalKey, fileType) {
   const tempInput = tmpPath(path.extname(tempKey));
   const asyncStart = Date.now();
+  const backend = await storageBackendService.getDefaultBackend();
+  const client = storageBackendService.getBackendClient(backend);
 
   try {
     // Download temp file from MinIO to local filesystem
-    const stream = await getObject(tempKey);
+    const stream = await client.getObject(tempKey);
     const writeStream = fs.createWriteStream(tempInput);
     await new Promise((resolve, reject) => {
       stream.pipe(writeStream);
@@ -334,36 +501,52 @@ async function processVideoAsync(fileId, project, tempKey, finalKey, fileType) {
     const thumbKey = finalKey.replace('.mp4', '_thumb.webp');
 
     // Upload final files
-    await putFile(finalKey, transcodedPath, 'video/mp4');
-    await putFile(thumbKey, thumbPath, 'image/webp');
+    await client.putFile(finalKey, transcodedPath, 'video/mp4');
+    await client.putFile(thumbKey, thumbPath, 'image/webp');
 
     // Get duration
     const duration = await getVideoDuration(transcodedPath);
 
+    // Checksum + thumbnail size for the recorded objects.
+    let videoChecksum = null;
+    try { videoChecksum = await sha256File(transcodedPath); } catch { /* best effort */ }
+    let thumbSize = 0;
+    try { thumbSize = (await fs.promises.stat(thumbPath)).size; } catch { /* noop */ }
+
     // Remove temp from MinIO
-    removeObject(tempKey).catch(() => {});
+    client.removeObject(tempKey).catch(() => {});
 
     // Update DB
     const asyncProcessingMs = Date.now() - asyncStart;
     await query(
       `UPDATE files SET status = 'done', size = $1, duration = $2, thumbnail_key = $3,
-       processing_ms = $4 WHERE id = $5`,
-      [finalSize, duration, thumbKey, asyncProcessingMs, fileId]
+       processing_ms = $4, checksum = $5 WHERE id = $6`,
+      [finalSize, duration, thumbKey, asyncProcessingMs, videoChecksum, fileId]
     );
 
-    await updateProjectCounters(project.id, finalSize);
+    // Record the physical objects for the finished renditions. Source
+    // preservation for video is deferred to a later phase.
+    await recordObject(fileId, backend, {
+      role: 'optimized', storageKey: finalKey, mimeType: 'video/mp4', size: finalSize, checksum: videoChecksum,
+    });
+    await recordObject(fileId, backend, {
+      role: 'thumbnail', storageKey: thumbKey, mimeType: 'image/webp', size: thumbSize,
+    });
+
+    await updateProjectCounters(project.id, finalSize + thumbSize, { incrementFileCount: false });
 
     cleanup(tempInput, transcodedPath, thumbPath);
 
     // Fire webhook: file.processed
     const { rows: fileRows } = await query('SELECT * FROM files WHERE id = $1', [fileId]);
     if (fileRows.length > 0) {
-      dispatchWebhook(project.id, 'file.processed', formatResponse(fileRows[0], project.id)).catch(() => {});
+      const objects = await fileObjectService.listObjects(fileId);
+      dispatchWebhook(project.id, 'file.processed', formatResponse(fileRows[0], project.id, objects)).catch(() => {});
     }
   } catch (err) {
     // On failure, copy temp to final key so something is accessible
     try {
-      const failStream = await getObject(tempKey);
+      const failStream = await client.getObject(tempKey);
       const failTmp = tmpPath('.mp4');
       const failWrite = fs.createWriteStream(failTmp);
       await new Promise((resolve, reject) => {
@@ -371,9 +554,9 @@ async function processVideoAsync(fileId, project, tempKey, finalKey, fileType) {
         failWrite.on('finish', resolve);
         failWrite.on('error', reject);
       });
-      await putFile(finalKey, failTmp, 'video/mp4');
+      await client.putFile(finalKey, failTmp, 'video/mp4');
       cleanup(failTmp);
-      removeObject(tempKey).catch(() => {});
+      client.removeObject(tempKey).catch(() => {});
     } catch { /* noop */ }
 
     await query(
@@ -389,31 +572,93 @@ async function processVideoAsync(fileId, project, tempKey, finalKey, fileType) {
   }
 }
 
+/**
+ * Store a file_objects row and return the response-shaped summary. Errors
+ * are swallowed so a bookkeeping failure never loses the already-stored
+ * bytes; the returned summary is still built from the known values.
+ */
+async function recordObject(fileId, backend, o) {
+  const summary = {
+    role: o.role,
+    storage_key: o.storageKey,
+    mime_type: o.mimeType,
+    size: o.size || 0,
+    checksum: o.checksum || null,
+    storage_tier: o.tier || 'hot',
+    status: 'available',
+  };
+  try {
+    await fileObjectService.createObject({
+      fileId,
+      role: o.role,
+      backendId: backend.id,
+      storageKey: o.storageKey,
+      mimeType: o.mimeType,
+      size: o.size || 0,
+      checksum: o.checksum || null,
+      tier: o.tier || 'hot',
+      status: 'available',
+      width: o.width,
+      height: o.height,
+      metadata: o.metadata,
+    });
+  } catch (err) {
+    console.error(`Failed to record file_object for ${fileId} (${o.role}):`, err.message);
+  }
+  return summary;
+}
+
+function sumObjectBytes(objects) {
+  return objects.reduce((total, o) => total + (o.size || 0), 0);
+}
+
 async function insertFileRecord(data) {
   const { rows } = await query(
     `INSERT INTO files (project_id, storage_key, filename, original_name, folder, type, mime_type,
-     size, original_size, width, height, duration, thumbnail_key, status, processing_ms, access, uploaded_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+     size, original_size, width, height, duration, thumbnail_key, status, processing_ms, access,
+     uploaded_by, checksum, retention_until)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      RETURNING *`,
     [
       data.projectId, data.storageKey, data.filename, data.originalName, data.folder,
       data.type, data.mimeType, data.size, data.originalSize, data.width || null,
       data.height || null, data.duration || null, data.thumbnailKey || null,
       data.status, data.processingMs, data.access, data.uploadedBy || null,
+      data.checksum || null, data.retentionUntil || null,
     ]
   );
   return rows[0];
 }
 
-async function updateProjectCounters(projectId, sizeChange) {
+async function updateProjectCounters(projectId, sizeChange, { incrementFileCount = true } = {}) {
+  const fileCountDelta = incrementFileCount ? 1 : 0;
   await query(
-    'UPDATE projects SET storage_used = storage_used + $1, file_count = file_count + 1 WHERE id = $2',
-    [sizeChange, projectId]
+    'UPDATE projects SET storage_used = storage_used + $1, file_count = file_count + $2 WHERE id = $3',
+    [sizeChange, fileCountDelta, projectId]
   ).catch(() => {});
 }
 
-function formatResponse(row, projectId) {
+/**
+ * @param {object[]} [objects] physical objects backing the file, in the
+ *   response shape { role, storage_key, size, mime_type, storage_tier|tier,
+ *   status, checksum }. Included as `objects`; a `source_url` is added when a
+ *   'source' object exists.
+ */
+function formatResponse(row, projectId, objects = []) {
   const urls = buildUrls(config.publicUrl, projectId, row.storage_key, row.type);
+
+  const objectList = (objects || []).map((o) => ({
+    role: o.role,
+    storage_key: o.storage_key,
+    size: typeof o.size === 'string' ? parseInt(o.size, 10) : (o.size || 0),
+    mime_type: o.mime_type,
+    tier: o.storage_tier || o.tier || 'hot',
+    status: o.status || 'available',
+    checksum: o.checksum || null,
+  }));
+
+  const source = objectList.find((o) => o.role === 'source');
+
   return {
     id: row.id,
     project_id: projectId,
@@ -431,6 +676,8 @@ function formatResponse(row, projectId) {
     thumbnail_url: row.thumbnail_key
       ? `${config.publicUrl}/f/${row.thumbnail_key}`
       : undefined,
+    source_url: source ? `${config.publicUrl}/f/${source.storage_key}` : undefined,
+    objects: objectList,
     access: row.access,
     status: row.status,
     processing_ms: row.processing_ms,
@@ -448,19 +695,38 @@ async function deleteFile(fileId, project) {
 
   const file = rows[0];
 
+  // Gather every physical object so we can remove all copies, not just the
+  // legacy canonical key. Older rows (pre-backfill) have no objects; fall
+  // back to the legacy storage_key/thumbnail_key.
+  let objects = [];
+  try {
+    objects = await fileObjectService.listObjects(fileId);
+  } catch { /* fall back to legacy keys below */ }
+
   // Soft delete
   await query('UPDATE files SET deleted_at = NOW() WHERE id = $1', [fileId]);
 
-  // Remove from MinIO
-  removeObject(file.storage_key).catch(() => {});
-  if (file.thumbnail_key) {
-    removeObject(file.thumbnail_key).catch(() => {});
+  let freedBytes;
+  if (objects.length > 0) {
+    freedBytes = objects.reduce((t, o) => t + (parseInt(o.size, 10) || 0), 0);
+    for (const o of objects) {
+      const backend = await storageBackendService.getBackendById(o.storage_backend_id);
+      const client = storageBackendService.getBackendClient(backend);
+      client.removeObject(o.storage_key).catch(() => {});
+    }
+  } else {
+    freedBytes = file.size;
+    const client = storageBackendService.getBackendClient(await storageBackendService.getDefaultBackend());
+    client.removeObject(file.storage_key).catch(() => {});
+    if (file.thumbnail_key) {
+      client.removeObject(file.thumbnail_key).catch(() => {});
+    }
   }
 
   // Decrement counters
   await query(
     'UPDATE projects SET storage_used = GREATEST(0, storage_used - $1), file_count = GREATEST(0, file_count - 1) WHERE id = $2',
-    [file.size, project.id]
+    [freedBytes, project.id]
   ).catch(() => {});
 
   // Track usage and fire webhook
@@ -477,7 +743,7 @@ async function deleteFile(fileId, project) {
     deleted: true,
     id: file.id,
     storage_key: file.storage_key,
-    freed_bytes: file.size,
+    freed_bytes: freedBytes,
   };
 }
 
@@ -537,8 +803,17 @@ async function listFiles(project, options = {}) {
     dataParams
   );
 
+  const data = [];
+  for (const row of rows) {
+    let objects = [];
+    try {
+      objects = await fileObjectService.listObjects(row.id);
+    } catch { /* objects are optional in the list view */ }
+    data.push(formatResponse(row, project.id, objects));
+  }
+
   return {
-    data: rows.map((row) => formatResponse(row, project.id)),
+    data,
     total,
     page: Math.max(1, parseInt(page) || 1),
     limit: clampedLimit,
@@ -552,7 +827,12 @@ async function getFile(fileId, project) {
   );
 
   if (rows.length === 0) return null;
-  return formatResponse(rows[0], project.id);
+
+  let objects = [];
+  try {
+    objects = await fileObjectService.listObjects(fileId);
+  } catch { /* objects are optional */ }
+  return formatResponse(rows[0], project.id, objects);
 }
 
 module.exports = { uploadFile, deleteFile, listFiles, getFile, ACCESS_LEVELS };

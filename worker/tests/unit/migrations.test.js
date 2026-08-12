@@ -66,3 +66,66 @@ describe('005_users_memberships.sql', () => {
     expect(sql).not.toMatch(/ALTER TABLE accounts[\s\S]*DROP COLUMN/);
   });
 });
+
+describe('006_logical_assets.sql', () => {
+  const sql = fs.readFileSync(
+    path.join(MIGRATIONS_DIR, '006_logical_assets.sql'),
+    'utf8'
+  );
+
+  it('should create storage_backends with a type check and nullable account scope', () => {
+    expect(sql).toMatch(/CREATE TABLE storage_backends/);
+    expect(sql).toMatch(/account_id\s+UUID REFERENCES accounts\(id\) ON DELETE CASCADE/);
+    expect(sql).toMatch(/CHECK \(type IN \('minio', 's3', 'r2', 'b2'\)\)/);
+    expect(sql).toMatch(/CHECK \(status IN \('active', 'disabled'\)\)/);
+  });
+
+  it('should allow only one default backend per scope', () => {
+    expect(sql).toMatch(/CREATE UNIQUE INDEX idx_storage_backends_one_default/);
+    expect(sql).toMatch(/COALESCE\(account_id, '00000000-0000-0000-0000-000000000000'::uuid\)/);
+    expect(sql).toMatch(/WHERE is_default/);
+  });
+
+  it('should seed exactly one system-default MinIO backend, idempotently', () => {
+    expect(sql).toMatch(/INSERT INTO storage_backends[\s\S]*'minio', 'Primary MinIO'/);
+    expect(sql).toMatch(/WHERE NOT EXISTS \(\s*SELECT 1 FROM storage_backends WHERE account_id IS NULL AND is_default/);
+  });
+
+  it('should create file_objects with role, tier, and status checks', () => {
+    expect(sql).toMatch(/CREATE TABLE file_objects/);
+    expect(sql).toMatch(/file_id\s+UUID NOT NULL REFERENCES files\(id\) ON DELETE CASCADE/);
+    expect(sql).toMatch(/storage_backend_id\s+UUID NOT NULL REFERENCES storage_backends\(id\)/);
+    expect(sql).toMatch(/CHECK \(role IN \([\s\S]*'source', 'optimized', 'thumbnail'/);
+    expect(sql).toMatch(/CHECK \(storage_tier IN \('hot', 'warm', 'cold', 'archive'\)\)/);
+    expect(sql).toMatch(/CHECK \(status IN \('pending', 'available', 'missing', 'corrupt'\)\)/);
+    expect(sql).toMatch(/CHECK \(size >= 0\)/);
+  });
+
+  it('should index file_objects and enforce backend+key uniqueness', () => {
+    expect(sql).toMatch(/CREATE INDEX idx_file_objects_file /);
+    expect(sql).toMatch(/CREATE INDEX idx_file_objects_file_role/);
+    expect(sql).toMatch(/CREATE UNIQUE INDEX idx_file_objects_backend_key ON file_objects\(storage_backend_id, storage_key\)/);
+    expect(sql).toMatch(/CREATE INDEX idx_file_objects_status/);
+    expect(sql).toMatch(/CREATE INDEX idx_file_objects_tier/);
+  });
+
+  it('should add lifecycle and preservation columns to files without dropping legacy ones', () => {
+    expect(sql).toMatch(/ALTER TABLE files ADD COLUMN IF NOT EXISTS lifecycle_state VARCHAR\(20\) NOT NULL DEFAULT 'active'/);
+    expect(sql).toMatch(/lifecycle_state IN \([\s\S]*'archived'[\s\S]*'legal_hold'[\s\S]*'deleted'\)/);
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ/);
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS access_count BIGINT NOT NULL DEFAULT 0 CHECK \(access_count >= 0\)/);
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS retention_until TIMESTAMPTZ/);
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS protected_from_delete BOOLEAN NOT NULL DEFAULT FALSE/);
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS checksum VARCHAR\(64\)/);
+    expect(sql).not.toMatch(/ALTER TABLE files[\s\S]*DROP COLUMN/);
+  });
+
+  it('should backfill an optimized object per file, idempotently', () => {
+    expect(sql).toMatch(/INSERT INTO file_objects[\s\S]*'optimized'/);
+    expect(sql).toMatch(/NOT EXISTS \(\s*SELECT 1 FROM file_objects o WHERE o\.file_id = f\.id AND o\.role = 'optimized'/);
+  });
+
+  it('should backfill a thumbnail object for files that have one', () => {
+    expect(sql).toMatch(/INSERT INTO file_objects[\s\S]*'thumbnail'[\s\S]*FROM files f\s*WHERE f\.thumbnail_key IS NOT NULL/);
+  });
+});
