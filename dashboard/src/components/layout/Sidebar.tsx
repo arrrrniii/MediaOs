@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
   FolderKanban,
+  Recycle,
   Settings,
   HardDrive,
   X,
@@ -21,6 +22,7 @@ import { Button } from '@/components/ui/button';
 const navItems = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
   { href: '/dashboard/projects', label: 'Projects', icon: FolderKanban },
+  { href: '/dashboard/lifecycle', label: 'Lifecycle', icon: Recycle },
   { href: '/dashboard/docs', label: 'Docs', icon: BookOpen },
   { href: '/dashboard/account', label: 'Account', icon: Settings },
 ];

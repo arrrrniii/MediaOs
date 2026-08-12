@@ -2,6 +2,7 @@ const { Router } = require('express');
 const { query } = require('../db');
 const { validateOriginal, validateTransform } = require('../services/signedUrl');
 const { trackDownload, trackTransform, trackBandwidth } = require('../services/usageService');
+const { recordAccess } = require('../services/accessTrackingService');
 const fileObjectService = require('../services/fileObjectService');
 const storageBackendService = require('../services/storageBackendService');
 const config = require('../config');
@@ -211,6 +212,7 @@ router.get('/f/:projectId/*', async (req, res, next) => {
       // Track download usage (fire-and-forget)
       trackDownload(file.project_id, bytesServed).catch(() => {});
       trackBandwidth(file.project_id, file.id, bytesServed);
+      recordAccess(file.id, file.type === 'video' ? 'video_play' : 'download');
     } else {
       res.set('Content-Length', stat.size);
       const stream = await target.client.getObject(target.key);
@@ -219,6 +221,7 @@ router.get('/f/:projectId/*', async (req, res, next) => {
       // Track download usage (fire-and-forget)
       trackDownload(file.project_id, stat.size).catch(() => {});
       trackBandwidth(file.project_id, file.id, stat.size);
+      recordAccess(file.id, file.type === 'video' ? 'video_play' : 'download');
     }
   } catch (err) {
     next(err);
@@ -351,6 +354,7 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
       const bytesServed = parseInt(contentLength) || 0;
       trackTransform(fileRows[0].project_id).catch(() => {});
       trackBandwidth(fileRows[0].project_id, fileRows[0].id, bytesServed, true);
+      recordAccess(fileRows[0].id, 'transform');
     }
   } catch (err) {
     next(err);

@@ -26,6 +26,8 @@ const webhookService = require('../services/webhookService');
 
 const MEDIA_TIMEOUT_MS = parseInt(process.env.MEDIA_JOB_TIMEOUT_MS || '900000', 10); // 15 min
 const OUTBOX_POLL_MS = parseInt(process.env.OUTBOX_POLL_MS || '2000', 10);
+// Daily lifecycle scan. Cron pattern; default 03:00 every day.
+const LIFECYCLE_SCAN_CRON = process.env.LIFECYCLE_SCAN_CRON || '0 3 * * *';
 const OUTBOX_BATCH = parseInt(process.env.OUTBOX_BATCH || '50', 10);
 const OUTBOX_MAX_ATTEMPTS = parseInt(process.env.OUTBOX_MAX_ATTEMPTS || '10', 10);
 
@@ -200,15 +202,32 @@ async function drainOutbox() {
 // ── Stub processors (filled by later phases) ────────────
 function stubProcessor(name, phase) {
   return async (job) => {
-    // TODO(phase-${phase}): implement ${name}. For now this is a durable
-    // no-op so the queue exists and jobs are accepted without error.
-    console.log(`[${name}] stub processed job ${job.id} (see Phase ${phase})`);
-    return { stub: true };
+    // Durable no-op so the queue exists and jobs are accepted without error.
+    // The job_attempts ledger row is written by addJob + the worker lifecycle
+    // events, so an enqueued archive/restore is visible and retryable even
+    // though its processor is not yet implemented.
+    console.log(`[${name}] job ${job.id} accepted — processor not yet implemented (Phase ${phase})`);
+    return { stub: true, notImplemented: true };
   };
+}
+
+// ── Lifecycle scan processor ────────────────────────────
+/**
+ * Run the cold-file scanner. A payload with a projectId scans just that
+ * project (e.g. an on-demand rescan); the repeatable daily job carries no
+ * payload and scans every active project.
+ */
+async function processLifecycleJob(job) {
+  const lifecycleService = require('../services/lifecycleService');
+  const projectId = (job.data && job.data.projectId) || null;
+  const summary = await lifecycleService.scanAll({ projectId });
+  console.log(`[lifecycle] scan complete: ${JSON.stringify(summary)}`);
+  return summary;
 }
 
 // ── Boot / shutdown ─────────────────────────────────────
 let outboxSchedulerStarted = false;
+let lifecycleSchedulerStarted = false;
 
 /**
  * Start every worker and the outbox poller. Idempotent-ish: intended to be
@@ -235,8 +254,8 @@ async function startWorkers() {
   // Outbox: a Worker that runs the drain, fed by a repeatable ~2s job.
   makeWorker(QUEUES.OUTBOX, () => drainOutbox(), { concurrency: 1 });
 
-  // Scaffolded workers for later phases.
-  makeWorker(QUEUES.LIFECYCLE, stubProcessor('lifecycle', 5), { concurrency: 1 });
+  // Lifecycle scanner (Phase 5) — live. Archive/restore processors are Phase 6.
+  makeWorker(QUEUES.LIFECYCLE, (job) => processLifecycleJob(job), { concurrency: 1 });
   makeWorker(QUEUES.ARCHIVE, stubProcessor('archive', 6), { concurrency: 1 });
   makeWorker(QUEUES.RESTORE, stubProcessor('restore', 6), { concurrency: 1 });
   makeWorker(QUEUES.RECONCILIATION, stubProcessor('reconciliation', 7), { concurrency: 1 });
@@ -255,7 +274,20 @@ async function startWorkers() {
     outboxSchedulerStarted = true;
   }
 
-  console.log('BullMQ workers started (media, webhook, outbox + lifecycle stubs)');
+  // Repeatable daily lifecycle scan. A fixed repeat jobId keeps a single
+  // schedule no matter how many nodes call startWorkers.
+  if (!lifecycleSchedulerStarted) {
+    const lifecycleQueue = getQueue(QUEUES.LIFECYCLE);
+    await lifecycleQueue.add('daily-scan', {}, {
+      repeat: { pattern: LIFECYCLE_SCAN_CRON },
+      jobId: 'lifecycle-daily-scan',
+      removeOnComplete: true,
+      removeOnFail: 100,
+    });
+    lifecycleSchedulerStarted = true;
+  }
+
+  console.log('BullMQ workers started (media, webhook, outbox, lifecycle scan + archive/restore stubs)');
 }
 
 /** Close every worker. Queues are closed separately via queue.closeAll(). */
@@ -263,6 +295,7 @@ async function stopWorkers() {
   await Promise.all(workers.map((w) => w.close().catch(() => {})));
   workers.length = 0;
   outboxSchedulerStarted = false;
+  lifecycleSchedulerStarted = false;
 }
 
 module.exports = {
@@ -271,4 +304,5 @@ module.exports = {
   drainOutbox,
   routeOutboxEvent,
   markJobAttempt,
+  processLifecycleJob,
 };

@@ -61,12 +61,17 @@ async function boot() {
     redis = null;
   }
 
-  // 7. Wire Redis into usage tracking + start flush interval
+  // 7. Wire Redis into usage tracking + per-file access tracking, and start
+  //    both flush intervals (project-level usage, per-asset lifecycle access).
   if (redis) {
     const { setRedis } = require('./services/usageService');
     const { startFlushInterval } = require('./services/usageFlushService');
+    const { setRedis: setAccessRedis } = require('./services/accessTrackingService');
+    const { startAccessFlush } = require('./services/lifecycleFlushService');
     setRedis(redis);
     startFlushInterval(redis);
+    setAccessRedis(redis);
+    startAccessFlush(redis);
   }
 
   // 8. Start durable BullMQ workers + the outbox poller. With Redis present
@@ -130,6 +135,15 @@ async function boot() {
       if (redis) await flush(redis);
     } catch (err) {
       console.error('Error flushing usage on shutdown:', err.message);
+    }
+
+    // Flush buffered per-file access ticks (lifecycle) from Redis to Postgres.
+    try {
+      const { stopAccessFlush, flushAccess } = require('./services/lifecycleFlushService');
+      stopAccessFlush();
+      if (redis) await flushAccess(redis);
+    } catch (err) {
+      console.error('Error flushing access on shutdown:', err.message);
     }
 
     // Close Redis + PG.
