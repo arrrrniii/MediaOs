@@ -20,6 +20,8 @@
 
 const { query } = require('../db');
 const config = require('../config');
+const logger = require('../utils/logger');
+const metrics = require('../observability/metrics');
 const { QUEUES, DEFAULT_JOB_OPTIONS, getConnection, getQueue, addJob } = require('./index');
 const { processMediaJob } = require('./processors/media');
 const { processArchiveJob } = require('./processors/archive');
@@ -91,12 +93,32 @@ function makeWorker(queueName, processor, { concurrency = 1, timeoutMs = 0 } = {
     concurrency,
   });
 
+  // Correlate a job back to the request that enqueued it, when present.
+  const jobLog = (job, extra) => ({
+    queue: queueName,
+    job_id: job && job.id,
+    attempt: job && (job.attemptsMade + 1),
+    request_id: (job && job.data && job.data.request_id) || undefined,
+    ...extra,
+  });
+  const jobDurationSec = (job) => (job && job.finishedOn && job.processedOn
+    ? (job.finishedOn - job.processedOn) / 1000
+    : undefined);
+
+  worker.on('active', (job) => {
+    logger.info('job.start', jobLog(job));
+  });
+
   worker.on('completed', (job) => {
+    metrics.recordJob(queueName, 'completed', jobDurationSec(job));
+    logger.info('job.completed', jobLog(job, { duration_ms: job && job.finishedOn && job.processedOn ? job.finishedOn - job.processedOn : undefined }));
     markJobAttempt(queueName, job && job.id, 'completed', { attempt: job && (job.attemptsMade + 1) });
   });
 
   worker.on('failed', (job, err) => {
     const status = isFinalFailure(job) ? 'dead' : 'failed';
+    metrics.recordJob(queueName, status === 'dead' ? 'dead' : 'failed', jobDurationSec(job));
+    logger.error('job.failed', jobLog(job, { status, error: err && err.message }));
     markJobAttempt(queueName, job && job.id, status, {
       attempt: job && job.attemptsMade,
       error: err && err.message,
@@ -104,11 +126,12 @@ function makeWorker(queueName, processor, { concurrency = 1, timeoutMs = 0 } = {
   });
 
   worker.on('stalled', (jobId) => {
+    logger.warn('job.stalled', { queue: queueName, job_id: jobId });
     markJobAttempt(queueName, jobId, 'stalled');
   });
 
   worker.on('error', (err) => {
-    console.error(`Worker error on ${queueName}:`, err.message);
+    logger.error('worker.error', { queue: queueName, error: err && err.message });
   });
 
   workers.push(worker);
@@ -213,7 +236,7 @@ async function processLifecycleJob(job) {
   const lifecycleService = require('../services/lifecycleService');
   const projectId = (job.data && job.data.projectId) || null;
   const summary = await lifecycleService.scanAll({ projectId });
-  console.log(`[lifecycle] scan complete: ${JSON.stringify(summary)}`);
+  logger.info('lifecycle.scan_complete', { project_id: projectId || null, ...summary });
   return summary;
 }
 
@@ -229,8 +252,16 @@ async function processReconciliationJob(job) {
   if (name === 'health.snapshot') {
     const healthService = require('../services/healthService');
     const r = await healthService.computeHealth();
-    console.log(`[health] snapshot ${r.snapshotId}: ${JSON.stringify(r.metrics)}`);
+    logger.info('health.snapshot', { snapshot_id: r.snapshotId, ...r.metrics });
+    // Refresh the storage/files gauges from the snapshot's totals.
+    metrics.setStorage(null, r.metrics && r.metrics.total_files);
     return { snapshotId: r.snapshotId };
+  }
+
+  if (name === 'restore.selftest') {
+    const { runRestoreSelftest } = require('../observability/restoreSelftest');
+    const r = await runRestoreSelftest();
+    return r;
   }
 
   const reconcileService = require('../services/reconcileService');
@@ -238,7 +269,10 @@ async function processReconciliationJob(job) {
     ? [job.data.category]
     : undefined;
   const summary = await reconcileService.runAllChecks({ categories });
-  console.log(`[reconcile] ${summary.kind} run ${summary.runId}: checked=${summary.checked} issues=${summary.issuesFound} repaired=${summary.repaired}`);
+  logger.info('reconcile.run_complete', {
+    kind: summary.kind, run_id: summary.runId,
+    checked: summary.checked, issues: summary.issuesFound, repaired: summary.repaired,
+  });
   return summary;
 }
 
@@ -317,7 +351,7 @@ async function processCleanupJob() {
     console.error('[cleanup] temp-upload sweep failed:', err.message);
   }
 
-  console.log(`[cleanup] ${JSON.stringify(result)}`);
+  logger.info('cleanup.complete', result);
   return result;
 }
 
@@ -403,10 +437,24 @@ async function startWorkers() {
       repeat: { pattern: config.cleanupCron },
       jobId: 'cleanup-daily', removeOnComplete: true, removeOnFail: 100,
     });
+
+    // Scheduled restore self-test — opt-in (RESTORE_TEST_ENABLED) so dev/CI
+    // stay quiet. Runs on the reconciliation queue; interval is env-tunable.
+    if (process.env.RESTORE_TEST_ENABLED === 'true') {
+      const restoreTestIntervalMs = parseInt(
+        process.env.RESTORE_TEST_INTERVAL_MS || String(24 * 60 * 60 * 1000), 10);
+      await reconcileQueue.add('restore.selftest', {}, {
+        repeat: { every: restoreTestIntervalMs },
+        jobId: 'restore-selftest', removeOnComplete: true, removeOnFail: 100,
+      });
+    }
     controlPlaneSchedulerStarted = true;
   }
 
-  console.log('BullMQ workers started (media, webhook, outbox, lifecycle scan, archive, restore, reconciliation, cleanup)');
+  logger.info('workers.started', {
+    queues: ['media', 'webhook', 'outbox', 'lifecycle', 'archive', 'restore', 'reconciliation', 'cleanup'],
+    restore_selftest: process.env.RESTORE_TEST_ENABLED === 'true',
+  });
 }
 
 /** Close every worker. Queues are closed separately via queue.closeAll(). */

@@ -228,6 +228,11 @@ async function attemptSend(webhook, event, data, projectId) {
 async function logDelivery(webhook, event, result, attempt, nextRetryAt) {
   const { payload, statusCode, responseBody, responseMs, error, delivered } = result;
 
+  try {
+    const metrics = require('../observability/metrics');
+    metrics.recordWebhook(delivered ? 'success' : (result.permanent ? 'permanent_failure' : 'failure'));
+  } catch { /* metrics optional */ }
+
   await query(
     `INSERT INTO webhook_deliveries (webhook_id, event, payload, attempt, status_code, response_body, response_ms, error, delivered, next_retry_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,

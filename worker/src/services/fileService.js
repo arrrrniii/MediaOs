@@ -318,15 +318,25 @@ async function createDedupedFile({ project, target, options, originalName, origi
  * then delegates the actual storage/processing to _uploadFileImpl.
  */
 async function uploadFile(file, project, options = {}, queue = null) {
+  const metrics = require('../observability/metrics');
   if (options.idempotencyKey) {
     const existing = await findByIdempotencyKey(project.id, options.idempotencyKey);
-    if (existing) return { ...existing, idempotent_replay: true };
+    if (existing) {
+      metrics.recordUpload(existing.type, 'idempotent');
+      return { ...existing, idempotent_replay: true };
+    }
   }
-  const result = await _uploadFileImpl(file, project, options, queue);
-  if (options.idempotencyKey && result && result.id) {
-    await recordIdempotency(project.id, options.idempotencyKey, result.id);
+  try {
+    const result = await _uploadFileImpl(file, project, options, queue);
+    if (options.idempotencyKey && result && result.id) {
+      await recordIdempotency(project.id, options.idempotencyKey, result.id);
+    }
+    metrics.recordUpload(result && result.type, 'ok');
+    return result;
+  } catch (err) {
+    metrics.recordUpload('unknown', 'error');
+    throw err;
   }
-  return result;
 }
 
 async function _uploadFileImpl(file, project, options = {}, queue = null) {
@@ -528,6 +538,9 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
     const jobData = {
       fileId: row.id,
       projectId: project.id,
+      // Propagated from the HTTP request (req.id) so the media job traces back
+      // to the upload that created it in structured logs.
+      request_id: options.requestId || null,
       tempKey,
       finalKey: storageKey,
       kind: passthrough ? 'video_passthrough' : 'video',

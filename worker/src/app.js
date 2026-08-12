@@ -1,8 +1,10 @@
 const express = require('express');
 const helmet = require('helmet');
+const requestId = require('./middleware/requestId');
 const corsMiddleware = require('./middleware/cors');
 const errorHandler = require('./middleware/errorHandler');
 const healthRoutes = require('./routes/health');
+const metricsRoutes = require('./routes/metrics');
 const authRoutes = require('./routes/authRoutes');
 const accountRoutes = require('./routes/accounts');
 const projectRoutes = require('./routes/projects');
@@ -32,6 +34,10 @@ function createApp() {
   // Initialize processing queue
   app.locals.queue = new Queue(config.concurrency);
 
+  // Request correlation + access logging — mounted FIRST so every request
+  // (including ones rejected downstream) carries an id and is metered.
+  app.use(requestId);
+
   // Security headers — relax CSP & CORP for CDN file-serving routes
   const cdnHelmet = helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } });
   app.use('/f/', cdnHelmet);
@@ -60,6 +66,10 @@ function createApp() {
 
   // Health check (no auth)
   app.use(healthRoutes);
+
+  // Prometheus metrics (gated inside the route: MASTER_KEY unless
+  // METRICS_PUBLIC/METRICS_TOKEN is set).
+  app.use(metricsRoutes);
 
   // Setup route (no auth — only works when 0 accounts exist)
   app.use(setupRoutes);

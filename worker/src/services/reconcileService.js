@@ -849,6 +849,9 @@ async function runAllChecks({ categories } = {}) {
       totals.checked += r.checked;
       totals.issuesFound += r.issuesFound;
       totals.repaired += r.repaired;
+      try {
+        require('../observability/metrics').recordReconcileIssues(category, r.issuesFound);
+      } catch { /* metrics optional */ }
     } catch (err) {
       status = 'failed';
       details[category] = { error: err.message };
