@@ -1,3 +1,5 @@
+const config = require('../config');
+
 const inMemoryStore = new Map();
 
 // Periodic cleanup of expired entries
@@ -13,7 +15,7 @@ setInterval(() => {
 function rateLimit(req, res, next) {
   if (!req.apiKey) return next();
 
-  const limit = req.apiKey.rate_limit || 100;
+  const limit = req.apiKey.rate_limit || config.apiRateLimit;
   const keyId = req.apiKey.id;
   const now = Date.now();
   const minuteBucket = Math.floor(now / 60000);
@@ -82,5 +84,10 @@ function handleInMemory(bucketKey, limit, resetAt, now, res, next) {
 
   next();
 }
+
+// Tests share one module instance across cases; let them start from zero.
+rateLimit.reset = function reset() {
+  inMemoryStore.clear();
+};
 
 module.exports = rateLimit;

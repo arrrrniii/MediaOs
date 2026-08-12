@@ -1,16 +1,22 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const sharp = require('sharp');
 const { query } = require('../db');
 const { putBuffer, putFile, removeObject, getObject } = require('../minio');
 const { processImage, isAnimatedGif } = require('./imageProcessor');
 const { transcodeVideo, extractThumbnail, getVideoDuration, cleanup, tmpPath } = require('./videoProcessor');
 const { slugify } = require('../utils/slugify');
-const { getMimeType } = require('../utils/mimeTypes');
-const { getFileType } = require('../utils/fileTypes');
+const { detectFileType, isDangerous, sanitizeSvg, svgHasActiveContent } = require('../utils/fileType');
 const { trackUpload, trackDelete } = require('./usageService');
 const { dispatch: dispatchWebhook } = require('./webhookService');
 const config = require('../config');
+
+const ACCESS_LEVELS = ['public', 'private', 'signed'];
+
+// Decompression-bomb guards, applied to image metadata before any pixel work.
+const MAX_IMAGE_PIXELS = parseInt(process.env.MAX_IMAGE_PIXELS || '50000000', 10);
+const MAX_IMAGE_DIMENSION = parseInt(process.env.MAX_IMAGE_DIMENSION || '16383', 10);
 
 function nanoid(size = 6) {
   return crypto.randomBytes(size).toString('hex').substring(0, size);
@@ -46,42 +52,150 @@ function buildUrls(publicUrl, projectId, storageKey, type) {
   return urls;
 }
 
+function uploadError(status, code, message) {
+  const err = new Error(message);
+  err.status = status;
+  err.code = code;
+  return err;
+}
+
+function resolveAccess(options, project) {
+  const requested = options.access;
+  if (requested !== undefined && requested !== null && requested !== '') {
+    if (!ACCESS_LEVELS.includes(requested)) {
+      throw uploadError(400, 'INVALID_ACCESS', 'Invalid access level. Use: public, private, signed');
+    }
+    return requested;
+  }
+  const fallback = project.settings?.default_access;
+  return ACCESS_LEVELS.includes(fallback) ? fallback : 'public';
+}
+
+function assertTypeAllowed(project, category) {
+  const allowed = project.settings?.allowed_types;
+  if (!Array.isArray(allowed) || allowed.length === 0) return;
+  // Audio has always been recorded under the generic "file" type, so a project
+  // that allows "file" still accepts audio.
+  const accepted = category === 'audio' ? ['audio', 'file'] : [category];
+  if (!accepted.some((c) => allowed.includes(c))) {
+    throw uploadError(400, 'TYPE_NOT_ALLOWED', `File type "${category}" is not allowed for this project`);
+  }
+}
+
+function assertWithinSizeLimit(project, size) {
+  const limit = project.settings?.max_file_size || config.maxFileSize;
+  if (limit && size > limit) {
+    throw uploadError(413, 'FILE_TOO_LARGE', `File exceeds the ${limit} byte limit for this project`);
+  }
+}
+
+// Reads dimensions from the header only; sharp does not decode pixels for metadata().
+async function imageMetadataWithinLimits(buffer) {
+  let metadata;
+  try {
+    metadata = await sharp(buffer).metadata();
+  } catch {
+    return null;
+  }
+  const width = metadata?.width;
+  const height = metadata?.height;
+  if (!width || !height) return metadata || null;
+
+  if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
+    throw uploadError(400, 'IMAGE_TOO_LARGE', `Image exceeds the maximum dimension of ${MAX_IMAGE_DIMENSION}px`);
+  }
+  if (width * height > MAX_IMAGE_PIXELS) {
+    throw uploadError(400, 'IMAGE_TOO_LARGE', `Image exceeds the maximum of ${MAX_IMAGE_PIXELS} pixels`);
+  }
+  return metadata;
+}
+
+/**
+ * Decide what we are actually storing, from the bytes rather than from the
+ * client-supplied mimetype or filename. SVG is the one type allowed through
+ * the dangerous-content gate, and only after its active content is stripped.
+ */
+function inspectUpload(buffer, originalName) {
+  const detected = detectFileType(buffer, originalName);
+
+  if (detected.mime === 'image/svg+xml') {
+    const sanitized = sanitizeSvg(buffer);
+    if (svgHasActiveContent(sanitized)) {
+      throw uploadError(400, 'DANGEROUS_FILE_TYPE', 'SVG contains active content that could not be removed');
+    }
+    return { detected, buffer: sanitized };
+  }
+
+  if (isDangerous(buffer, detected.mime)) {
+    throw uploadError(400, 'DANGEROUS_FILE_TYPE', 'This file type cannot be served safely and was rejected');
+  }
+
+  return { detected, buffer };
+}
+
 async function uploadFile(file, project, options = {}, queue = null) {
   const start = Date.now();
-  const ext = path.extname(file.originalname).toLowerCase();
-  const fileType = getFileType(ext);
+  const access = resolveAccess(options, project);
   const slug = slugify(options.name || file.originalname);
   const folder = sanitizeFolder(options.folder);
-  const access = options.access || project.settings?.default_access || 'public';
 
-  if (fileType === 'image') {
-    // Check for animated GIF
-    const animated = ext === '.gif' && await isAnimatedGif(file.buffer);
+  const { detected, buffer } = inspectUpload(file.buffer, file.originalname);
+  const ext = detected.ext;
+  const originalSize = file.buffer.length;
 
+  assertWithinSizeLimit(project, buffer.length);
+  assertTypeAllowed(project, detected.category);
+
+  if (detected.category === 'image') {
+    // SVG is stored as sanitized source; rasterizing it would lose its point.
+    if (detected.mime === 'image/svg+xml') {
+      const storageKey = buildStorageKey(project.id, folder, slug, 'svg');
+      let metadata = null;
+      try {
+        metadata = await sharp(buffer).metadata();
+      } catch { /* dimensions are optional for SVG */ }
+      await putBuffer(storageKey, buffer, 'image/svg+xml');
+
+      const processingMs = Date.now() - start;
+      const row = await insertFileRecord({
+        projectId: project.id, storageKey, filename: path.basename(storageKey),
+        originalName: file.originalname, folder, type: 'image', mimeType: 'image/svg+xml',
+        size: buffer.length, originalSize,
+        width: metadata?.width || null, height: metadata?.height || null,
+        status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
+      });
+      await updateProjectCounters(project.id, buffer.length);
+      const svgResponse = formatResponse(row, project.id);
+      trackUpload(project.id, buffer.length).catch(() => {});
+      dispatchWebhook(project.id, 'file.uploaded', svgResponse).catch(() => {});
+      return svgResponse;
+    }
+
+    const imageMetadata = await imageMetadataWithinLimits(buffer);
+
+    // Animated GIF -> store as-is (preserve animation)
+    const animated = detected.mime === 'image/gif' && await isAnimatedGif(buffer);
     if (animated) {
-      // Animated GIF -> store as-is (preserve animation)
-      const sharp = require('sharp');
-      const metadata = await sharp(file.buffer).metadata();
       const storageKey = buildStorageKey(project.id, folder, slug, 'gif');
-      await putBuffer(storageKey, file.buffer, 'image/gif');
+      await putBuffer(storageKey, buffer, 'image/gif');
 
       const processingMs = Date.now() - start;
       const row = await insertFileRecord({
         projectId: project.id, storageKey, filename: path.basename(storageKey),
         originalName: file.originalname, folder, type: 'image', mimeType: 'image/gif',
-        size: file.buffer.length, originalSize: file.buffer.length,
-        width: metadata.width || null, height: metadata.height || null,
+        size: buffer.length, originalSize,
+        width: imageMetadata?.width || null, height: imageMetadata?.height || null,
         status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
       });
-      await updateProjectCounters(project.id, file.buffer.length);
+      await updateProjectCounters(project.id, buffer.length);
       const response = formatResponse(row, project.id);
-      trackUpload(project.id, file.buffer.length).catch(() => {});
+      trackUpload(project.id, buffer.length).catch(() => {});
       dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
       return response;
     }
 
     // Regular image -> WebP
-    const result = await processImage(file.buffer, {
+    const result = await processImage(buffer, {
       maxWidth: project.settings?.max_width || config.maxWidth,
       maxHeight: project.settings?.max_height || config.maxHeight,
       quality: project.settings?.webp_quality || config.webpQuality,
@@ -94,58 +208,58 @@ async function uploadFile(file, project, options = {}, queue = null) {
     const row = await insertFileRecord({
       projectId: project.id, storageKey, filename: path.basename(storageKey),
       originalName: file.originalname, folder, type: 'image', mimeType: 'image/webp',
-      size: result.size, originalSize: file.buffer.length, width: result.width,
+      size: result.size, originalSize, width: result.width,
       height: result.height, status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
     });
     await updateProjectCounters(project.id, result.size);
     const response = formatResponse(row, project.id);
-    trackUpload(project.id, file.buffer.length).catch(() => {});
+    trackUpload(project.id, originalSize).catch(() => {});
     dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
     return response;
   }
 
-  if (fileType === 'video' || fileType === 'video_passthrough') {
+  if (detected.category === 'video') {
     // Store temp original, return 202, enqueue processing
-    const finalExt = 'mp4';
-    const storageKey = buildStorageKey(project.id, folder, slug, finalExt);
+    const passthrough = detected.mime === 'video/mp4';
+    const storageKey = buildStorageKey(project.id, folder, slug, 'mp4');
     const tempKey = `_processing_${crypto.randomBytes(8).toString('hex')}${ext}`;
 
     // Store temp in MinIO
-    await putBuffer(tempKey, file.buffer, getMimeType(ext));
+    await putBuffer(tempKey, buffer, detected.mime);
 
     const processingMs = Date.now() - start;
     const row = await insertFileRecord({
       projectId: project.id, storageKey, filename: path.basename(storageKey),
       originalName: file.originalname, folder, type: 'video', mimeType: 'video/mp4',
-      size: 0, originalSize: file.buffer.length, status: 'processing',
+      size: 0, originalSize, status: 'processing',
       processingMs, access, uploadedBy: options.apiKeyId,
     });
 
     // Enqueue async processing (download from MinIO, don't hold buffer)
     if (queue) {
       queue.enqueue(row.id, async () => {
-        await processVideoAsync(row.id, project, tempKey, storageKey, fileType);
+        await processVideoAsync(row.id, project, tempKey, storageKey, passthrough ? 'video_passthrough' : 'video');
       }).catch((err) => {
         console.error(`Video processing failed for ${row.id}:`, err.message);
       });
     }
 
     const response = formatResponse(row, project.id);
-    trackUpload(project.id, file.buffer.length).catch(() => {});
+    trackUpload(project.id, originalSize).catch(() => {});
     dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
     return { ...response, _statusCode: 202 };
   }
 
-  if (fileType === 'audio') {
+  if (detected.category === 'audio') {
     // Store as-is, extract duration
     const storageKey = buildStorageKey(project.id, folder, slug, ext.substring(1));
-    await putBuffer(storageKey, file.buffer, getMimeType(ext));
+    await putBuffer(storageKey, buffer, detected.mime);
 
     // Try to get duration
     let duration = null;
     try {
       const tempPath = tmpPath(ext);
-      await fs.promises.writeFile(tempPath, file.buffer);
+      await fs.promises.writeFile(tempPath, buffer);
       duration = await getVideoDuration(tempPath);
       cleanup(tempPath);
     } catch { /* noop */ }
@@ -153,31 +267,31 @@ async function uploadFile(file, project, options = {}, queue = null) {
     const processingMs = Date.now() - start;
     const row = await insertFileRecord({
       projectId: project.id, storageKey, filename: path.basename(storageKey),
-      originalName: file.originalname, folder, type: 'file', mimeType: getMimeType(ext),
-      size: file.buffer.length, originalSize: file.buffer.length, duration,
+      originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
+      size: buffer.length, originalSize, duration,
       status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
     });
-    await updateProjectCounters(project.id, file.buffer.length);
+    await updateProjectCounters(project.id, buffer.length);
     const audioResponse = formatResponse(row, project.id);
-    trackUpload(project.id, file.buffer.length).catch(() => {});
+    trackUpload(project.id, originalSize).catch(() => {});
     dispatchWebhook(project.id, 'file.uploaded', audioResponse).catch(() => {});
     return audioResponse;
   }
 
   // Generic file — store as-is
   const storageKey = buildStorageKey(project.id, folder, slug, ext.substring(1) || 'bin');
-  await putBuffer(storageKey, file.buffer, getMimeType(ext));
+  await putBuffer(storageKey, buffer, detected.mime);
 
   const processingMs = Date.now() - start;
   const row = await insertFileRecord({
     projectId: project.id, storageKey, filename: path.basename(storageKey),
-    originalName: file.originalname, folder, type: 'file', mimeType: getMimeType(ext),
-    size: file.buffer.length, originalSize: file.buffer.length,
+    originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
+    size: buffer.length, originalSize,
     status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
   });
-  await updateProjectCounters(project.id, file.buffer.length);
+  await updateProjectCounters(project.id, buffer.length);
   const fileResponse = formatResponse(row, project.id);
-  trackUpload(project.id, file.buffer.length).catch(() => {});
+  trackUpload(project.id, originalSize).catch(() => {});
   dispatchWebhook(project.id, 'file.uploaded', fileResponse).catch(() => {});
   return fileResponse;
 }
@@ -441,4 +555,4 @@ async function getFile(fileId, project) {
   return formatResponse(rows[0], project.id);
 }
 
-module.exports = { uploadFile, deleteFile, listFiles, getFile };
+module.exports = { uploadFile, deleteFile, listFiles, getFile, ACCESS_LEVELS };

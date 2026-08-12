@@ -1,5 +1,6 @@
 const { validateKey } = require('../services/keyService');
 const { query } = require('../db');
+const rateLimit = require('./rateLimit');
 
 function auth(requiredScope) {
   return async (req, res, next) => {
@@ -59,7 +60,10 @@ function auth(requiredScope) {
       [apiKey.id]
     ).catch(() => {});
 
-    next();
+    // 12. Per-key rate limit. It runs here rather than as app-level middleware
+    // because the limit lives on the key, which only exists once the key has
+    // been validated — mounting it earlier silently limited nothing.
+    rateLimit(req, res, next);
   };
 }
 

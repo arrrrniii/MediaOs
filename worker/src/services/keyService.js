@@ -64,10 +64,12 @@ async function createKey(projectId, name = 'Default Key', scopes = ['upload', 'r
   };
 }
 
-async function revokeKey(keyId) {
+// projectId is required: a key id alone would let any caller who can reach
+// one project revoke a key belonging to another.
+async function revokeKey(keyId, projectId) {
   const { rowCount } = await query(
-    "UPDATE api_keys SET status = 'revoked' WHERE id = $1 AND status = 'active'",
-    [keyId]
+    "UPDATE api_keys SET status = 'revoked' WHERE id = $1 AND project_id = $2 AND status = 'active'",
+    [keyId, projectId]
   );
   return rowCount > 0;
 }
@@ -83,10 +85,10 @@ async function listKeys(projectId) {
   return rows;
 }
 
-async function revealKey(keyId) {
+async function revealKey(keyId, projectId) {
   const { rows } = await query(
-    "SELECT encrypted_key FROM api_keys WHERE id = $1 AND status = 'active'",
-    [keyId]
+    "SELECT encrypted_key FROM api_keys WHERE id = $1 AND project_id = $2 AND status = 'active'",
+    [keyId, projectId]
   );
   if (rows.length === 0 || !rows[0].encrypted_key) return null;
   return decrypt(rows[0].encrypted_key, config.masterKey);

@@ -27,6 +27,10 @@ module.exports = {
   publicUrl: (process.env.PUBLIC_URL || 'http://localhost:3000').replace(/\/$/, ''),
   masterKey: process.env.MASTER_KEY || '',
 
+  // Shared secret proving a request came from the dashboard server, not a browser.
+  // Required by /api/v1/auth/login and every account-scoped route.
+  internalApiSecret: process.env.INTERNAL_API_SECRET || '',
+
   // Initial admin (created on first boot if no accounts exist)
   adminName: process.env.ADMIN_NAME || 'Admin',
   adminEmail: process.env.ADMIN_EMAIL || '',
@@ -44,4 +48,11 @@ module.exports = {
   // Usage flush (Redis → Postgres)
   usageFlushIntervalMs: parseInt(process.env.USAGE_FLUSH_INTERVAL_MS || '10000'),
   metadataCacheTtl: parseInt(process.env.METADATA_CACHE_TTL_SECONDS || '300'),
+
+  // Rate limits (requests per minute)
+  apiRateLimit: parseInt(process.env.API_RATE_LIMIT || '100'),      // per API key, fallback when api_keys.rate_limit is null
+  loginRateLimit: parseInt(process.env.LOGIN_RATE_LIMIT || '10'),   // per IP and per email
+  adminRateLimit: parseInt(process.env.ADMIN_RATE_LIMIT || '120'),  // per IP, MASTER_KEY routes
+  sessionRateLimit: parseInt(process.env.SESSION_RATE_LIMIT || '300'), // per IP, account-scoped routes
+  setupRateLimit: parseInt(process.env.SETUP_RATE_LIMIT || '5'),    // per IP, first-boot setup
 };

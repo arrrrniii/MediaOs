@@ -7,6 +7,7 @@
 
 // Jest requires mock variables to be prefixed with "mock"
 const mockMasterKey = 'test-master-key-12345';
+const mockInternalSecret = 'test-internal-secret-67890';
 
 // ── Mock DB ──────────────────────────────────────────────
 const mockDb = {
@@ -111,6 +112,7 @@ jest.mock('../src/config', () => ({
   imgproxyUrl: 'http://localhost:8080',
   publicUrl: 'http://localhost:3000',
   masterKey: mockMasterKey,
+  internalApiSecret: mockInternalSecret,
   webpQuality: 80,
   maxWidth: 1600,
   maxHeight: 1600,
@@ -118,6 +120,11 @@ jest.mock('../src/config', () => ({
   videoMaxHeight: 1080,
   maxFileSize: 104857600,
   concurrency: 3,
+  apiRateLimit: 100,
+  loginRateLimit: 10,
+  adminRateLimit: 120,
+  sessionRateLimit: 300,
+  setupRateLimit: 5,
 }));
 
 // ── Mock Sharp (image processor) ─────────────────────────
@@ -188,6 +195,11 @@ jest.mock('../src/services/webhookService', () => ({
 
 // ── Create app helper ────────────────────────────────────
 function createTestApp() {
+  // Rate limiter buckets live in module scope, so a fresh app still shares
+  // counters with earlier tests unless they are cleared here.
+  require('../src/middleware/ipRateLimit').reset();
+  require('../src/middleware/rateLimit').reset();
+
   const createApp = require('../src/app');
   return createApp();
 }
@@ -266,8 +278,65 @@ const testFile = {
   deleted_at: null,
 };
 
+// ── Session / tenancy factories ──────────────────────────
+const testUser = {
+  id: 'user-test-id',
+  email: 'test@example.com',
+  name: 'Test User',
+  status: 'active',
+};
+
+// A second tenant, for cross-tenant isolation tests.
+const otherAccount = {
+  id: 'acc-other-id',
+  name: 'Other Co',
+  plan: 'free',
+  status: 'active',
+};
+
+const otherUser = {
+  id: 'user-other-id',
+  email: 'other@example.com',
+  name: 'Other User',
+  status: 'active',
+};
+
 // Export MASTER_KEY as the same value
 const MASTER_KEY = mockMasterKey;
+const INTERNAL_SECRET = mockInternalSecret;
+
+/**
+ * Headers a dashboard-originated request carries. Pass overrides to simulate
+ * a missing/wrong secret or a different user/account.
+ */
+function sessionHeaders({ user = testUser, account = testAccount, secret = INTERNAL_SECRET } = {}) {
+  const headers = {};
+  if (secret !== null) headers['x-internal-secret'] = secret;
+  if (user !== null) headers['x-user-id'] = user.id;
+  if (account !== null) headers['x-account-id'] = account.id;
+  return headers;
+}
+
+/**
+ * Prime the two queries sessionAuth runs: the user lookup and the
+ * membership+account join. Pass membership: null to simulate a non-member.
+ */
+function mockSession({ user = testUser, account = testAccount, role = 'owner', membership = true } = {}) {
+  mockDb.onQuery('SELECT id, email, name, status FROM users', {
+    rows: [{ id: user.id, email: user.email, name: user.name, status: 'active' }],
+  });
+  mockDb.onQuery('FROM account_memberships m', {
+    rows: membership
+      ? [{
+          role,
+          account_id: account.id,
+          account_name: account.name,
+          plan: account.plan,
+          status: 'active',
+        }]
+      : [],
+  });
+}
 
 module.exports = {
   createTestApp,
@@ -275,8 +344,14 @@ module.exports = {
   mockQuery,
   mockMinio,
   MASTER_KEY,
+  INTERNAL_SECRET,
+  sessionHeaders,
+  mockSession,
   testAccount,
   testProject,
   testApiKey,
   testFile,
+  testUser,
+  otherAccount,
+  otherUser,
 };

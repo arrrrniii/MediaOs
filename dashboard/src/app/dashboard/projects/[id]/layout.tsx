@@ -1,4 +1,5 @@
-import { adminFetch } from '@/lib/api';
+import { getAccountContext } from '@/lib/session';
+import { accountFetch } from '@/lib/api';
 import { formatBytes, formatDate } from '@/lib/utils';
 import type { Project } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,9 +15,12 @@ export default async function ProjectLayout({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  const ctx = await getAccountContext();
+  if (!ctx) notFound();
+
   let project: Project;
   try {
-    project = await adminFetch<Project>(`/api/v1/projects/${id}`);
+    project = await accountFetch<Project>(ctx, `/api/v1/projects/${id}`);
   } catch {
     notFound();
   }

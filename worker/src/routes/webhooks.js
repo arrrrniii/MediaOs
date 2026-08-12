@@ -4,6 +4,13 @@ const { createWebhook, listWebhooks, deleteWebhook } = require('../services/webh
 
 const router = Router();
 
+const MAX_WEBHOOKS_PER_PROJECT = 20;
+
+// Validation errors from webhookService/urlGuard carry .status and .code.
+function isValidationError(err) {
+  return err && err.status === 400 && typeof err.code === 'string';
+}
+
 // POST /api/v1/webhooks — create webhook
 router.post('/api/v1/webhooks', auth('admin'), async (req, res, next) => {
   try {
@@ -16,9 +23,20 @@ router.post('/api/v1/webhooks', auth('admin'), async (req, res, next) => {
       });
     }
 
-    const webhook = await createWebhook(req.project.id, url, events);
+    const existing = await listWebhooks(req.project.id);
+    if (existing.length >= MAX_WEBHOOKS_PER_PROJECT) {
+      return res.status(400).json({
+        error: `Project already has the maximum of ${MAX_WEBHOOKS_PER_PROJECT} webhooks`,
+        code: 'WEBHOOK_LIMIT_REACHED',
+      });
+    }
+
+    const webhook = await createWebhook(req.project.id, url, events == null ? undefined : events);
     res.status(201).json(webhook);
   } catch (err) {
+    if (isValidationError(err)) {
+      return res.status(400).json({ error: err.message, code: err.code });
+    }
     next(err);
   }
 });

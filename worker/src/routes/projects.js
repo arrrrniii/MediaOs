@@ -1,35 +1,36 @@
 const { Router } = require('express');
 const crypto = require('crypto');
-const adminAuth = require('../middleware/adminAuth');
+const { sessionScope, requireRole } = require('../middleware/sessionAuth');
 const { query } = require('../db');
 const { getCurrentUsage } = require('../services/usageService');
 const { removeObject } = require('../minio');
 
 const router = Router();
 
-// POST /api/v1/projects — create a new project
-router.post('/api/v1/projects', adminAuth, async (req, res, next) => {
+// Every route here is scoped to req.account — the account the caller holds a
+// membership in — so a project id belonging to another tenant reads as 404.
+
+// POST /api/v1/projects — create a project in the active account
+router.post('/api/v1/projects', ...sessionScope, requireRole('admin'), async (req, res, next) => {
   try {
     const { account_id, name, slug, description, settings } = req.body;
 
-    if (!account_id || !name) {
+    if (!name) {
       return res.status(400).json({
-        error: 'account_id and name are required',
+        error: 'name is required',
         code: 'VALIDATION_ERROR',
       });
     }
 
-    // Verify account exists
-    const { rows: accounts } = await query(
-      "SELECT id FROM accounts WHERE id = $1 AND status = 'active'",
-      [account_id]
-    );
-    if (accounts.length === 0) {
-      return res.status(404).json({
-        error: 'Account not found',
-        code: 'ACCOUNT_NOT_FOUND',
+    // The account comes from the membership, never from the body. A body that
+    // names a different account is a bug or an attack, not a routing hint.
+    if (account_id && account_id !== req.account.id) {
+      return res.status(403).json({
+        error: 'Cannot create a project in another account',
+        code: 'ACCOUNT_MISMATCH',
       });
     }
+    const accountId = req.account.id;
 
     // Generate slug if not provided
     const projectSlug = slug || name
@@ -40,7 +41,7 @@ router.post('/api/v1/projects', adminAuth, async (req, res, next) => {
     // Check duplicate slug for this account
     const { rows: existing } = await query(
       'SELECT id FROM projects WHERE account_id = $1 AND slug = $2',
-      [account_id, projectSlug]
+      [accountId, projectSlug]
     );
     if (existing.length > 0) {
       return res.status(409).json({
@@ -67,7 +68,7 @@ router.post('/api/v1/projects', adminAuth, async (req, res, next) => {
       `INSERT INTO projects (account_id, name, slug, description, signing_secret, settings)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, account_id, name, slug, description, status, signing_secret, settings, storage_used, file_count, created_at, updated_at`,
-      [account_id, name, projectSlug, description || null, signingSecret, JSON.stringify(mergedSettings)]
+      [accountId, name, projectSlug, description || null, signingSecret, JSON.stringify(mergedSettings)]
     );
 
     res.status(201).json(rows[0]);
@@ -76,22 +77,17 @@ router.post('/api/v1/projects', adminAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/v1/projects — list projects (paginated)
-router.get('/api/v1/projects', adminAuth, async (req, res, next) => {
+// GET /api/v1/projects — list the active account's projects
+router.get('/api/v1/projects', ...sessionScope, requireRole('viewer'), async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
     const offset = (page - 1) * limit;
-    const accountId = req.query.account_id;
     const status = req.query.status;
 
-    const conditions = ["status != 'deleted'"];
-    const params = [];
+    const params = [req.account.id];
+    const conditions = ["status != 'deleted'", `account_id = $${params.length}`];
 
-    if (accountId) {
-      params.push(accountId);
-      conditions.push(`account_id = $${params.length}`);
-    }
     if (status) {
       params.push(status);
       conditions.push(`status = $${params.length}`);
@@ -120,13 +116,13 @@ router.get('/api/v1/projects', adminAuth, async (req, res, next) => {
   }
 });
 
-// GET /api/v1/projects/:id — get project details with usage summary
-router.get('/api/v1/projects/:id', adminAuth, async (req, res, next) => {
+// GET /api/v1/projects/:id — project details with usage summary
+router.get('/api/v1/projects/:id', ...sessionScope, requireRole('viewer'), async (req, res, next) => {
   try {
     const { rows } = await query(
       `SELECT id, account_id, name, slug, description, status, settings, storage_used, file_count, created_at, updated_at
-       FROM projects WHERE id = $1 AND status != 'deleted'`,
-      [req.params.id]
+       FROM projects WHERE id = $1 AND account_id = $2 AND status != 'deleted'`,
+      [req.params.id, req.account.id]
     );
 
     if (rows.length === 0) {
@@ -145,11 +141,11 @@ router.get('/api/v1/projects/:id', adminAuth, async (req, res, next) => {
 });
 
 // PATCH /api/v1/projects/:id — update project settings
-router.patch('/api/v1/projects/:id', adminAuth, async (req, res, next) => {
+router.patch('/api/v1/projects/:id', ...sessionScope, requireRole('admin'), async (req, res, next) => {
   try {
     const { rows: existing } = await query(
-      "SELECT * FROM projects WHERE id = $1 AND status != 'deleted'",
-      [req.params.id]
+      "SELECT * FROM projects WHERE id = $1 AND account_id = $2 AND status != 'deleted'",
+      [req.params.id, req.account.id]
     );
 
     if (existing.length === 0) {
@@ -191,8 +187,10 @@ router.patch('/api/v1/projects/:id', adminAuth, async (req, res, next) => {
     }
 
     params.push(req.params.id);
+    const idParam = params.length;
+    params.push(req.account.id);
     const { rows } = await query(
-      `UPDATE projects SET ${updates.join(', ')} WHERE id = $${params.length}
+      `UPDATE projects SET ${updates.join(', ')} WHERE id = $${idParam} AND account_id = $${params.length}
        RETURNING id, account_id, name, slug, description, status, settings, storage_used, file_count, created_at, updated_at`,
       params
     );
@@ -204,13 +202,13 @@ router.patch('/api/v1/projects/:id', adminAuth, async (req, res, next) => {
 });
 
 // DELETE /api/v1/projects/:id — soft delete project
-router.delete('/api/v1/projects/:id', adminAuth, async (req, res, next) => {
+router.delete('/api/v1/projects/:id', ...sessionScope, requireRole('owner'), async (req, res, next) => {
   try {
     const projectId = req.params.id;
 
     const { rowCount } = await query(
-      "UPDATE projects SET status = 'deleted' WHERE id = $1 AND status != 'deleted'",
-      [projectId]
+      "UPDATE projects SET status = 'deleted' WHERE id = $1 AND account_id = $2 AND status != 'deleted'",
+      [projectId, req.account.id]
     );
 
     if (rowCount === 0) {

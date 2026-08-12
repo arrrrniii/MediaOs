@@ -1,9 +1,9 @@
 const express = require('express');
 const helmet = require('helmet');
 const corsMiddleware = require('./middleware/cors');
-const rateLimit = require('./middleware/rateLimit');
 const errorHandler = require('./middleware/errorHandler');
 const healthRoutes = require('./routes/health');
+const authRoutes = require('./routes/authRoutes');
 const accountRoutes = require('./routes/accounts');
 const projectRoutes = require('./routes/projects');
 const apiKeyRoutes = require('./routes/apiKeys');
@@ -51,19 +51,22 @@ function createApp() {
   // Setup route (no auth — only works when 0 accounts exist)
   app.use(setupRoutes);
 
-  // Admin routes (master key auth)
+  // Dashboard login (internal secret auth)
+  app.use(authRoutes);
+
+  // Account routes: system-admin provisioning (master key) + legacy login
+  // + the session-scoped password change.
   app.use(accountRoutes);
+
+  // Customer routes (session auth — scoped to an account membership)
   app.use(projectRoutes);
   app.use(apiKeyRoutes);
   app.use(adminFileRoutes);
   app.use(adminWebhookRoutes);
   app.use(adminUsageRoutes);
 
-  // File routes (API key auth + rate limiting)
-  app.use('/api/v1/upload', rateLimit);
-  app.use('/api/v1/files', rateLimit);
-  app.use('/api/v1/webhooks', rateLimit);
-  app.use('/api/v1/usage', rateLimit);
+  // File routes (API key auth; the per-key rate limit runs inside auth(),
+  // which is the first point at which the key — and its limit — is known)
   app.use(uploadRoutes);
   app.use(fileRoutes);
 

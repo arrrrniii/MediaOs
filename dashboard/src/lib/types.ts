@@ -1,3 +1,13 @@
+export type AccountRole = 'owner' | 'admin' | 'editor' | 'viewer';
+
+/** An account the signed-in user belongs to, plus the role that gets them in. */
+export interface AccountMembership {
+  id: string;
+  name: string;
+  plan: string;
+  role: AccountRole;
+}
+
 export interface Account {
   id: string;
   name: string;
@@ -123,4 +133,23 @@ export interface PaginatedResponse<T> {
   total: number;
   page?: number;
   limit?: number;
+}
+
+// The session carries the user's memberships so route handlers can scope
+// worker calls without re-querying on every request.
+declare module 'next-auth' {
+  interface User {
+    accounts?: AccountMembership[];
+    activeAccountId?: string;
+    role?: string;
+  }
+}
+
+declare module 'next-auth/jwt' {
+  interface JWT {
+    id?: string;
+    accounts?: AccountMembership[];
+    activeAccountId?: string;
+    role?: string;
+  }
 }

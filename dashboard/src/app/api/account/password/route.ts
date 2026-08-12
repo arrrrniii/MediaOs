@@ -1,23 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
-import { adminFetch } from '@/lib/api';
+import { getAccountContext } from '@/lib/session';
+import { accountFetch } from '@/lib/api';
 
 export async function PATCH(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session) {
+  const ctx = await getAccountContext();
+  if (!ctx) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const userId = (session.user as { id?: string }).id;
-  if (!userId) {
-    return NextResponse.json({ error: 'No account ID in session' }, { status: 400 });
   }
 
   const body = await req.json();
 
   try {
-    const result = await adminFetch(`/api/v1/accounts/${userId}/password`, {
+    const result = await accountFetch(ctx, `/api/v1/accounts/${ctx.userId}/password`, {
       method: 'PATCH',
       body: JSON.stringify(body),
     });

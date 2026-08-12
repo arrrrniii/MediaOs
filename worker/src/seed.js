@@ -1,7 +1,6 @@
-const bcrypt = require('bcrypt');
-const crypto = require('crypto');
 const config = require('./config');
 const { query } = require('./db');
+const { hashPassword, ensureOwnerUser } = require('./services/identityService');
 
 async function seedAdmin() {
   // Check if any accounts exist
@@ -17,13 +16,21 @@ async function seedAdmin() {
     return;
   }
 
-  const hash = await bcrypt.hash(config.adminPassword, 12);
+  const hash = await hashPassword(config.adminPassword);
 
-  await query(
+  const { rows: created } = await query(
     `INSERT INTO accounts (name, email, password_hash, plan, status)
-     VALUES ($1, $2, $3, $4, $5)`,
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
     [config.adminName, config.adminEmail, hash, 'free', 'active']
   );
+
+  await ensureOwnerUser({
+    accountId: created[0].id,
+    name: config.adminName,
+    email: config.adminEmail,
+    passwordHash: hash,
+  });
 
   console.log('');
   console.log('═══════════════════════════════════════════════');

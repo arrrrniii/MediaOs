@@ -7,6 +7,65 @@ const config = require('../config');
 
 const router = Router();
 
+// Upper bound on imgproxy output dimensions, so a URL cannot ask the origin to
+// render an arbitrarily large image.
+const MAX_TRANSFORM_DIMENSION = parseInt(process.env.MAX_TRANSFORM_DIMENSION || '4096', 10);
+
+const PUBLIC_CACHE = 'public, max-age=31536000, immutable';
+const PUBLIC_EDGE_CACHE = 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400';
+const PRIVATE_CACHE = 'private, no-store';
+
+const TRANSFORM_FORMATS = ['webp', 'avif', 'jpeg', 'png'];
+const SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+function isPublicAccess(access) {
+  // Anything we cannot positively identify as public is treated as private.
+  return access === 'public';
+}
+
+/**
+ * Caching and CORS headers. Signed and private files must never be stored by a
+ * shared cache — a cached copy would keep serving after the token expires.
+ */
+function setCacheHeaders(res, access) {
+  if (isPublicAccess(access)) {
+    res.set('Cache-Control', PUBLIC_CACHE);
+    res.set('CDN-Cache-Control', PUBLIC_EDGE_CACHE);
+    res.set('Surrogate-Control', PUBLIC_EDGE_CACHE);
+    res.set('Access-Control-Allow-Origin', '*');
+  } else {
+    res.set('Cache-Control', PRIVATE_CACHE);
+    res.set('CDN-Cache-Control', 'no-store');
+    res.set('Surrogate-Control', 'no-store');
+    res.set('Vary', 'Authorization');
+    // The global CORS middleware opens these routes to every origin; a private
+    // file should not be readable cross-origin just because it has a token.
+    res.removeHeader('Access-Control-Allow-Origin');
+  }
+}
+
+function contentDispositionFilename(filename) {
+  const fallback = String(filename || 'download').replace(/["\\\r\n]/g, '_');
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename || 'download')}`;
+}
+
+/**
+ * Content-sniffing and script-execution defenses for whatever we are about to
+ * write to the response.
+ */
+function setContentSafetyHeaders(res, { mimeType, type, filename }) {
+  res.set('X-Content-Type-Options', 'nosniff');
+
+  if (mimeType === 'image/svg+xml') {
+    res.set('Content-Security-Policy', SVG_CSP);
+  }
+
+  // Non-media is never rendered inline in the CDN origin.
+  if (type === 'file') {
+    res.set('Content-Disposition', contentDispositionFilename(filename));
+  }
+}
+
 // GET /f/:projectId/* — serve file from MinIO
 router.get('/f/:projectId/*', async (req, res, next) => {
   try {
@@ -52,7 +111,11 @@ router.get('/f/:projectId/*', async (req, res, next) => {
 
     // If file is processing, return a status page
     if (file.status === 'processing') {
-      return res.status(202).set('Content-Type', 'text/html').send(`
+      return res
+        .status(202)
+        .set('Content-Type', 'text/html')
+        .set('Cache-Control', 'no-store')
+        .send(`
         <!DOCTYPE html>
         <html><head><meta http-equiv="refresh" content="5">
         <title>Processing...</title></head>
@@ -76,15 +139,17 @@ router.get('/f/:projectId/*', async (req, res, next) => {
     // Set headers
     const etag = stat.etag;
     res.set('Content-Type', file.mime_type);
-    res.set('Cache-Control', 'public, max-age=31536000, immutable');
-    res.set('CDN-Cache-Control', 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400');
-    res.set('Surrogate-Control', 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400');
-    res.set('ETag', etag);
-    res.set('Access-Control-Allow-Origin', '*');
+    setCacheHeaders(res, file.access);
+    setContentSafetyHeaders(res, {
+      mimeType: file.mime_type,
+      type: file.type,
+      filename: file.filename,
+    });
+    if (etag) res.set('ETag', etag);
     res.set('Accept-Ranges', 'bytes');
 
     // 304 Not Modified
-    if (req.headers['if-none-match'] && req.headers['if-none-match'] === etag) {
+    if (etag && req.headers['if-none-match'] && req.headers['if-none-match'] === etag) {
       return res.status(304).end();
     }
 
@@ -96,7 +161,7 @@ router.get('/f/:projectId/*', async (req, res, next) => {
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
 
-      if (start >= total || end >= total) {
+      if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end < start || start >= total || end >= total) {
         res.status(416).set('Content-Range', `bytes */${total}`).end();
         return;
       }
@@ -142,13 +207,48 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
       });
     }
 
+    // Validate dimensions — 0 means "derive from the other axis", so at least
+    // one of the two has to be a real size.
+    if (!/^\d+$/.test(width) || !/^\d+$/.test(height)) {
+      return res.status(400).json({
+        error: 'Width and height must be non-negative integers',
+        code: 'INVALID_DIMENSIONS',
+      });
+    }
+    const w = parseInt(width, 10);
+    const h = parseInt(height, 10);
+    if (w === 0 && h === 0) {
+      return res.status(400).json({
+        error: 'Width and height cannot both be zero',
+        code: 'INVALID_DIMENSIONS',
+      });
+    }
+    if (w > MAX_TRANSFORM_DIMENSION || h > MAX_TRANSFORM_DIMENSION) {
+      return res.status(400).json({
+        error: `Width and height cannot exceed ${MAX_TRANSFORM_DIMENSION}px`,
+        code: 'DIMENSION_TOO_LARGE',
+      });
+    }
+
+    // Validate the optional output format
+    const requestedFormat = req.query.format;
+    if (requestedFormat !== undefined && !TRANSFORM_FORMATS.includes(requestedFormat)) {
+      return res.status(400).json({
+        error: `Invalid format. Use: ${TRANSFORM_FORMATS.join(', ')}`,
+        code: 'INVALID_FORMAT',
+      });
+    }
+
     // Check file access level
     const { rows: fileRows } = await query(
       'SELECT f.access, f.id, f.project_id, p.signing_secret FROM files f JOIN projects p ON f.project_id = p.id WHERE f.storage_key = $1 AND f.deleted_at IS NULL',
       [storageKey]
     );
 
-    if (fileRows.length > 0 && (fileRows[0].access === 'private' || fileRows[0].access === 'signed')) {
+    // An unknown key is not known to be public, so it gets the private headers.
+    const access = fileRows.length > 0 ? fileRows[0].access : null;
+
+    if (fileRows.length > 0 && (access === 'private' || access === 'signed')) {
       const token = req.query.token;
       const expires = req.query.expires;
 
@@ -159,7 +259,7 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
         });
       }
 
-      const format = req.query.format || 'webp';
+      const format = requestedFormat || 'webp';
       if (!validateTransform(fileRows[0].signing_secret, storageKey, { mode: type, width, height, format }, token, expires)) {
         const isExpired = parseInt(expires) < Math.floor(Date.now() / 1000);
         return res.status(403).json({
@@ -170,7 +270,8 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
     }
 
     // Proxy to imgproxy
-    const imgproxyPath = `/insecure/resize:${type}:${width}:${height}/plain/s3://${config.bucket}/${storageKey}`;
+    const extension = requestedFormat ? `@${requestedFormat}` : '';
+    const imgproxyPath = `/insecure/resize:${type}:${w}:${h}/plain/s3://${config.bucket}/${storageKey}${extension}`;
     const imgproxyUrl = `${config.imgproxyUrl}${imgproxyPath}`;
 
     const controller = new AbortController();
@@ -189,11 +290,10 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
     }
 
     // Forward headers
-    res.set('Content-Type', response.headers.get('content-type') || 'image/webp');
-    res.set('Cache-Control', 'public, max-age=31536000, immutable');
-    res.set('CDN-Cache-Control', 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400');
-    res.set('Surrogate-Control', 'public, max-age=31536000, stale-while-revalidate=60, stale-if-error=86400');
-    res.set('Access-Control-Allow-Origin', '*');
+    const contentType = response.headers.get('content-type') || 'image/webp';
+    res.set('Content-Type', contentType);
+    setCacheHeaders(res, access);
+    setContentSafetyHeaders(res, { mimeType: contentType, type: 'image' });
 
     const contentLength = response.headers.get('content-length');
     if (contentLength) {

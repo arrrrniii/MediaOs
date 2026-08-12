@@ -1,6 +1,7 @@
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
-import { adminFetch } from '@/lib/api';
+import { getAccountContext } from '@/lib/session';
+import { accountFetch } from '@/lib/api';
 import { formatBytes, formatRelativeTime } from '@/lib/utils';
 import type { Project, FileRecord, PaginatedResponse } from '@/lib/types';
 import {
@@ -16,16 +17,19 @@ import RecentUploadsGrid from '@/components/files/RecentUploadsGrid';
 
 export default async function DashboardPage() {
   const session = await getServerSession(authOptions);
-  const accountId = (session?.user as { id?: string })?.id;
+  const ctx = await getAccountContext();
 
   let projects: Project[] = [];
-  try {
-    const res = await adminFetch<PaginatedResponse<Project>>(
-      `/api/v1/projects?account_id=${accountId}&status=active`,
-    );
-    projects = res.data;
-  } catch {
-    // API may not be available yet
+  if (ctx) {
+    try {
+      const res = await accountFetch<PaginatedResponse<Project>>(
+        ctx,
+        '/api/v1/projects?status=active',
+      );
+      projects = res.data;
+    } catch {
+      // API may not be available yet
+    }
   }
 
   const totalFiles = projects.reduce((sum, p) => sum + p.file_count, 0);
@@ -35,7 +39,8 @@ export default async function DashboardPage() {
   let totalBandwidth = 0;
   for (const project of projects) {
     try {
-      const usage = await adminFetch<{ bandwidth_bytes?: number; download_bytes?: number }>(
+      const usage = await accountFetch<{ bandwidth_bytes?: number; download_bytes?: number }>(
+        ctx!,
         `/api/v1/projects/${project.id}/usage`,
       );
       totalBandwidth += usage.bandwidth_bytes || usage.download_bytes || 0;
@@ -45,10 +50,11 @@ export default async function DashboardPage() {
   }
 
   // Fetch recent uploads from the first few projects
-  let recentUploads: (FileRecord & { project_name: string })[] = [];
+  const recentUploads: (FileRecord & { project_name: string })[] = [];
   for (const project of projects.slice(0, 5)) {
     try {
-      const res = await adminFetch<PaginatedResponse<FileRecord>>(
+      const res = await accountFetch<PaginatedResponse<FileRecord>>(
+        ctx!,
         `/api/v1/projects/${project.id}/files?limit=12&sort=created_at&order=desc`,
       );
       for (const file of res.data) {
