@@ -23,6 +23,7 @@ const navItems = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
   { href: '/dashboard/projects', label: 'Projects', icon: FolderKanban },
   { href: '/dashboard/lifecycle', label: 'Lifecycle', icon: Recycle },
+  { href: '/dashboard/storage', label: 'Storage', icon: HardDrive },
   { href: '/dashboard/docs', label: 'Docs', icon: BookOpen },
   { href: '/dashboard/account', label: 'Account', icon: Settings },
 ];

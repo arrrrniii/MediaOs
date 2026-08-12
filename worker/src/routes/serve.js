@@ -5,9 +5,62 @@ const { trackDownload, trackTransform, trackBandwidth } = require('../services/u
 const { recordAccess } = require('../services/accessTrackingService');
 const fileObjectService = require('../services/fileObjectService');
 const storageBackendService = require('../services/storageBackendService');
+const lifecycleService = require('../services/lifecycleService');
+const { addJob, QUEUES, isEnabled } = require('../queue');
 const config = require('../config');
 
 const router = Router();
+
+// How long a client should wait before retrying a request that triggered an
+// on-access restore. Restores are async (copy cold→hot + verify), so this is a
+// hint, not a guarantee.
+const RESTORE_RETRY_AFTER_SECONDS = 10;
+
+/**
+ * A file is archived (cold, no hot copy) and must be restored before it can be
+ * served. If the project opts into restore-on-access, kick off an idempotent
+ * RESTORE job, flip the file to 'restoring', and tell the caller to retry.
+ * Returns true when it handled the response (202), false to serve normally.
+ */
+async function maybeHandleArchived(req, res, file) {
+  const state = file.lifecycle_state;
+  if (state !== 'archived' && state !== 'restoring') return false;
+
+  const policy = lifecycleService.getLifecyclePolicy({ settings: file.project_settings });
+
+  // Archived + restore-on-access disabled: the cold copy is still available, so
+  // fall through and serve it directly from cold rather than denying access.
+  if (state === 'archived' && !policy.restoreOnAccess) return false;
+
+  if (state === 'archived') {
+    // Guarded flip so concurrent hits don't each enqueue/transition twice.
+    try {
+      const { rowCount } = await query(
+        `UPDATE files SET lifecycle_state = 'restoring' WHERE id = $1 AND lifecycle_state = 'archived'`,
+        [file.id]
+      );
+      if (rowCount === 1) {
+        await lifecycleService.writeAudit(query, {
+          accountId: file.project_account_id, projectId: file.project_id, fileId: file.id,
+          action: 'restore.on_access', fromState: 'archived', toState: 'restoring',
+          actor: 'system:serve', detail: { trigger: 'access' },
+        });
+        if (isEnabled()) {
+          await addJob(QUEUES.RESTORE, 'restore',
+            { fileId: file.id, projectId: file.project_id },
+            { jobId: `restore:${file.id}` }).catch(() => {});
+        }
+      }
+    } catch {
+      // If the transition/enqueue fails we still return 202; the file is not
+      // servable from hot yet, and a retry will re-drive the restore.
+    }
+  }
+
+  res.set('Retry-After', String(RESTORE_RETRY_AFTER_SECONDS));
+  res.set('Cache-Control', 'no-store');
+  return res.status(202).json({ status: 'restoring', message: 'Restore in progress' });
+}
 
 /**
  * Resolve which physical object to stream for a logical file, and the
@@ -106,7 +159,7 @@ router.get('/f/:projectId/*', async (req, res, next) => {
 
     // Look up file in DB
     const { rows } = await query(
-      'SELECT f.*, p.signing_secret FROM files f JOIN projects p ON f.project_id = p.id WHERE f.storage_key = $1 AND f.deleted_at IS NULL',
+      'SELECT f.*, p.signing_secret, p.settings AS project_settings, p.account_id AS project_account_id FROM files f JOIN projects p ON f.project_id = p.id WHERE f.storage_key = $1 AND f.deleted_at IS NULL',
       [storageKey]
     );
 
@@ -139,6 +192,11 @@ router.get('/f/:projectId/*', async (req, res, next) => {
         });
       }
     }
+
+    // If the file is archived to cold storage (no hot copy), optionally kick
+    // off an on-access restore and tell the caller to retry. Runs after the
+    // access check so it never leaks the existence of a private archived file.
+    if (await maybeHandleArchived(req, res, file)) return;
 
     // If file is processing, return a status page
     if (file.status === 'processing') {

@@ -107,6 +107,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
       MASTER_KEY: ${MASTER_KEY:-}
       INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-}
+      STORAGE_ENCRYPTION_KEY: ${STORAGE_ENCRYPTION_KEY:-}
       # Admin account (first boot only)
       ADMIN_NAME: ${ADMIN_NAME:-Admin}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}

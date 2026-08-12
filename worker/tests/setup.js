@@ -148,6 +148,9 @@ jest.mock('../src/config', () => ({
   publicUrl: 'http://localhost:3000',
   masterKey: mockMasterKey,
   internalApiSecret: mockInternalSecret,
+  // Fixed 32-byte hex key so secretBox round-trips in unit/integration tests.
+  storageEncryptionKey: '0'.repeat(64),
+  archiveHotGraceMs: 7 * 24 * 60 * 60 * 1000,
   webpQuality: 80,
   maxWidth: 1600,
   maxHeight: 1600,

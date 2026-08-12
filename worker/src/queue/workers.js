@@ -22,6 +22,8 @@ const { query } = require('../db');
 const config = require('../config');
 const { QUEUES, DEFAULT_JOB_OPTIONS, getConnection, getQueue, addJob } = require('./index');
 const { processMediaJob } = require('./processors/media');
+const { processArchiveJob } = require('./processors/archive');
+const { processRestoreJob } = require('./processors/restore');
 const webhookService = require('../services/webhookService');
 
 const MEDIA_TIMEOUT_MS = parseInt(process.env.MEDIA_JOB_TIMEOUT_MS || '900000', 10); // 15 min
@@ -254,10 +256,12 @@ async function startWorkers() {
   // Outbox: a Worker that runs the drain, fed by a repeatable ~2s job.
   makeWorker(QUEUES.OUTBOX, () => drainOutbox(), { concurrency: 1 });
 
-  // Lifecycle scanner (Phase 5) — live. Archive/restore processors are Phase 6.
+  // Lifecycle scanner (Phase 5) — live. Archive/restore processors (Phase 6)
+  // are now live; the ARCHIVE worker handles both the initial 'archive' job and
+  // the delayed 'archive-finalize' grace step (same processor, idempotent).
   makeWorker(QUEUES.LIFECYCLE, (job) => processLifecycleJob(job), { concurrency: 1 });
-  makeWorker(QUEUES.ARCHIVE, stubProcessor('archive', 6), { concurrency: 1 });
-  makeWorker(QUEUES.RESTORE, stubProcessor('restore', 6), { concurrency: 1 });
+  makeWorker(QUEUES.ARCHIVE, (job) => processArchiveJob(job.data), { concurrency: 1 });
+  makeWorker(QUEUES.RESTORE, (job) => processRestoreJob(job.data), { concurrency: 1 });
   makeWorker(QUEUES.RECONCILIATION, stubProcessor('reconciliation', 7), { concurrency: 1 });
   makeWorker(QUEUES.CLEANUP, stubProcessor('cleanup', 5), { concurrency: 1 });
 
@@ -287,7 +291,7 @@ async function startWorkers() {
     lifecycleSchedulerStarted = true;
   }
 
-  console.log('BullMQ workers started (media, webhook, outbox, lifecycle scan + archive/restore stubs)');
+  console.log('BullMQ workers started (media, webhook, outbox, lifecycle scan, archive, restore + reconciliation stub)');
 }
 
 /** Close every worker. Queues are closed separately via queue.closeAll(). */

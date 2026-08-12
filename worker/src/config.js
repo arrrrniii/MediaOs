@@ -27,6 +27,16 @@ module.exports = {
   publicUrl: (process.env.PUBLIC_URL || 'http://localhost:3000').replace(/\/$/, ''),
   masterKey: process.env.MASTER_KEY || '',
 
+  // 32-byte key (hex or base64) encrypting remote storage-backend credentials
+  // in storage_backends.configuration_encrypted. Required only when a remote
+  // (cold) backend is configured; the local MinIO default needs no key.
+  storageEncryptionKey: process.env.STORAGE_ENCRYPTION_KEY || '',
+
+  // Grace window between verifying a cold copy and deleting the hot original.
+  // The archiver keeps the hot copy this long so a mistaken archive is
+  // trivially reversible; a delayed finalize step deletes it afterwards.
+  archiveHotGraceMs: parseInt(process.env.ARCHIVE_HOT_GRACE_MS || String(7 * 24 * 60 * 60 * 1000), 10),
+
   // Shared secret proving a request came from the dashboard server, not a browser.
   // Required by /api/v1/auth/login and every account-scoped route.
   internalApiSecret: process.env.INTERNAL_API_SECRET || '',
