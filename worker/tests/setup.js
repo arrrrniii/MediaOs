@@ -43,11 +43,46 @@ const mockQuery = jest.fn(async (text, params) => {
   return mockDb._findResult(text);
 });
 
-const mockPool = { query: mockQuery, end: jest.fn() };
+// A transaction client whose query delegates to the same recorder, so
+// onQuery matchers and queryCalls work identically inside withTransaction.
+const mockClient = { query: mockQuery, release: jest.fn() };
+const mockPool = {
+  query: mockQuery,
+  end: jest.fn(),
+  connect: jest.fn(async () => mockClient),
+};
+
+// withTransaction runs fn against the mock client (no real BEGIN/COMMIT).
+const mockWithTransaction = jest.fn(async (fn) => fn(mockClient));
 
 jest.mock('../src/db', () => ({
   pool: mockPool,
   query: mockQuery,
+  withTransaction: mockWithTransaction,
+}));
+
+// ── Mock queue (BullMQ) — no Redis in unit/integration ───
+const mockAddJob = jest.fn(async () => ({ id: 'job-mock-id' }));
+jest.mock('../src/queue', () => ({
+  QUEUES: {
+    MEDIA: 'media-processing', WEBHOOK: 'webhook-delivery', LIFECYCLE: 'lifecycle',
+    ARCHIVE: 'archive', RESTORE: 'restore', RECONCILIATION: 'reconciliation',
+    CLEANUP: 'cleanup', OUTBOX: 'outbox',
+  },
+  DEFAULT_JOB_OPTIONS: {},
+  addJob: mockAddJob,
+  getQueue: jest.fn(),
+  getConnection: jest.fn(),
+  recordJobActive: jest.fn(async () => {}),
+  closeAll: jest.fn(async () => {}),
+  isEnabled: jest.fn(() => true),
+  setEnabled: jest.fn(),
+}));
+
+// ── Mock outbox service (durable event emit) ─────────────
+jest.mock('../src/services/outboxService', () => ({
+  emitEvent: jest.fn(async () => ({ id: 'outbox-mock-id' })),
+  emitEventStandalone: jest.fn(async () => ({ id: 'outbox-mock-id' })),
 }));
 
 // ── Mock MinIO ───────────────────────────────────────────

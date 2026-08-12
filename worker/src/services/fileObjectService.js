@@ -24,9 +24,12 @@ const { query } = require('../db');
  * @param {number} [o.width]
  * @param {number} [o.height]
  * @param {object} [o.metadata]
+ * @param {object} [client]  optional pg transaction client; when given the
+ *   insert runs on it so the object commits atomically with related rows.
  */
-async function createObject(o) {
-  const { rows } = await query(
+async function createObject(o, client = null) {
+  const exec = client ? (text, params) => client.query(text, params) : query;
+  const { rows } = await exec(
     `INSERT INTO file_objects
        (file_id, role, storage_backend_id, storage_key, mime_type, size,
         checksum, storage_tier, status, width, height, metadata)

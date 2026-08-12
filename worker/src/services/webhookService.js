@@ -70,18 +70,33 @@ async function deleteWebhook(webhookId, projectId) {
   return rowCount > 0;
 }
 
+/**
+ * Fire an event. Now a thin shim over the transactional outbox: it persists
+ * the event durably (emitEventStandalone) so the outbox poller can enqueue
+ * the actual durable webhook-delivery jobs. Kept so any remaining direct
+ * caller keeps working; new code should prefer emitting through the outbox in
+ * the same transaction as the state change.
+ */
 async function dispatch(projectId, event, data) {
-  // Get active webhooks for this project that listen to this event
-  const { rows: webhooks } = await query(
+  const { emitEventStandalone } = require('./outboxService');
+  const aggregateId = data && (data.id || data.file_id) ? (data.id || data.file_id) : null;
+  await emitEventStandalone({
+    aggregateType: 'file',
+    aggregateId,
+    eventType: event,
+    payload: { ...data, project_id: data?.project_id || projectId },
+  });
+}
+
+/**
+ * Look up the active webhooks subscribed to an event for a project.
+ */
+async function subscribersFor(projectId, event) {
+  const { rows } = await query(
     "SELECT * FROM webhooks WHERE project_id = $1 AND status = 'active' AND $2 = ANY(events)",
     [projectId, event]
   );
-
-  for (const webhook of webhooks) {
-    deliverWithRetry(webhook, event, data, projectId).catch((err) => {
-      console.error(`Webhook delivery failed for ${webhook.id}:`, err.message);
-    });
-  }
+  return rows;
 }
 
 /** Read at most `cap` bytes of the response, then cancel the rest. */
@@ -122,7 +137,16 @@ async function guardTarget(url) {
   return createPinnedDispatcher(addresses);
 }
 
-async function deliverWithRetry(webhook, event, data, projectId, attempt = 1) {
+/**
+ * Perform ONE delivery attempt: build+sign the payload, guard+pin the target,
+ * POST it, read a capped body. Pure of retry policy — the caller (BullMQ, or
+ * the legacy deliverWithRetry) decides what to do with the result.
+ *
+ * @returns {object} { payload, payloadStr, delivered, permanent, statusCode,
+ *   responseBody, error, responseMs }. `permanent` marks a failure that must
+ *   never be retried (target resolves to a non-public address).
+ */
+async function attemptSend(webhook, event, data, projectId) {
   const payload = {
     event,
     timestamp: new Date().toISOString(),
@@ -195,40 +219,59 @@ async function deliverWithRetry(webhook, event, data, projectId, attempt = 1) {
   }
 
   const responseMs = Date.now() - start;
+  return { payload, payloadStr, delivered, permanent, statusCode, responseBody, error, responseMs };
+}
 
-  // Determine next retry
-  const willRetry = !delivered && !permanent && attempt < MAX_ATTEMPTS;
-  const nextRetryAt = willRetry ? new Date(Date.now() + RETRY_DELAYS[attempt - 1]) : null;
+/**
+ * Log a webhook_deliveries row and bump the webhook's success/failure stats.
+ */
+async function logDelivery(webhook, event, result, attempt, nextRetryAt) {
+  const { payload, statusCode, responseBody, responseMs, error, delivered } = result;
 
-  // Log delivery
   await query(
     `INSERT INTO webhook_deliveries (webhook_id, event, payload, attempt, status_code, response_body, response_ms, error, delivered, next_retry_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [webhook.id, event, JSON.stringify(payload), attempt, statusCode, responseBody, responseMs, error, delivered, nextRetryAt]
   ).catch(() => {});
 
-  // Update webhook stats
-  if (delivered) {
-    await query(
-      `UPDATE webhooks SET last_triggered = NOW(), last_status = $1,
-       success_count = success_count + 1 WHERE id = $2`,
-      [statusCode, webhook.id]
-    ).catch(() => {});
-  } else {
-    await query(
-      `UPDATE webhooks SET last_triggered = NOW(), last_status = $1,
-       failure_count = failure_count + 1 WHERE id = $2`,
-      [statusCode, webhook.id]
-    ).catch(() => {});
+  const statsCol = delivered ? 'success_count' : 'failure_count';
+  await query(
+    `UPDATE webhooks SET last_triggered = NOW(), last_status = $1,
+     ${statsCol} = ${statsCol} + 1 WHERE id = $2`,
+    [statusCode, webhook.id]
+  ).catch(() => {});
+}
 
-    // Schedule retry
-    if (willRetry) {
-      const timer = setTimeout(() => {
-        deliverWithRetry(webhook, event, data, projectId, attempt + 1).catch(() => {});
-      }, RETRY_DELAYS[attempt - 1]);
-      if (timer.unref) timer.unref();
-    }
-  }
+/**
+ * Deliver a webhook exactly once and record it. This is the unit BullMQ's
+ * WEBHOOK worker runs; BullMQ owns retries, backoff, and the dead-letter set,
+ * so there is no self-scheduled retry here. next_retry_at is left NULL — the
+ * live retry schedule lives in Redis, not this log row.
+ *
+ * @param {number} [attempt] the BullMQ attempt number, for the log.
+ * @returns {object} { delivered, permanent, statusCode, error }
+ */
+async function deliverOnce(webhook, event, data, projectId, attempt = 1) {
+  const result = await attemptSend(webhook, event, data, projectId);
+  await logDelivery(webhook, event, result, attempt, null);
+  return {
+    delivered: result.delivered,
+    permanent: result.permanent,
+    statusCode: result.statusCode,
+    error: result.error,
+  };
+}
+
+/**
+ * Legacy single-shot delivery that also computes a next_retry_at for the log
+ * (BullMQ now owns the actual retry scheduling, so no timer is armed). Kept
+ * for backward compatibility and unit coverage.
+ */
+async function deliverWithRetry(webhook, event, data, projectId, attempt = 1) {
+  const result = await attemptSend(webhook, event, data, projectId);
+  const willRetry = !result.delivered && !result.permanent && attempt < MAX_ATTEMPTS;
+  const nextRetryAt = willRetry ? new Date(Date.now() + RETRY_DELAYS[attempt - 1]) : null;
+  await logDelivery(webhook, event, result, attempt, nextRetryAt);
 }
 
 module.exports = {
@@ -236,6 +279,9 @@ module.exports = {
   listWebhooks,
   deleteWebhook,
   dispatch,
+  subscribersFor,
+  attemptSend,
+  deliverOnce,
   deliverWithRetry,
   readCappedBody,
   validateEvents,

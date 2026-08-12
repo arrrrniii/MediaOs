@@ -69,16 +69,79 @@ async function boot() {
     startFlushInterval(redis);
   }
 
-  // 8. Create Express app
+  // 8. Start durable BullMQ workers + the outbox poller. With Redis present
+  //    this is the default path: media processing and webhooks survive a
+  //    restart. Without Redis we log clearly and fall back to the in-memory
+  //    queue (single-node, no durability) for media.
+  const queueModule = require('./queue');
+  if (redis) {
+    try {
+      const { startWorkers } = require('./queue/workers');
+      await startWorkers();
+      queueModule.setEnabled(true);
+      console.log('Durable queue mode: BullMQ workers + outbox poller running');
+    } catch (err) {
+      queueModule.setEnabled(false);
+      console.error('Failed to start BullMQ workers, falling back to in-memory queue:', err.message);
+    }
+  } else {
+    queueModule.setEnabled(false);
+    console.warn('Redis unavailable: media processing runs in-memory (no durability guarantees)');
+  }
+
+  // 9. Create Express app
   const app = createApp();
   app.locals.redis = redis;
 
-  // 9. Start listening
-  app.listen(config.port, () => {
+  // 10. Start listening
+  const server = app.listen(config.port, () => {
     console.log(`MediaOS worker listening on port ${config.port}`);
     console.log(`Environment: ${config.nodeEnv}`);
     console.log(`Public URL: ${config.publicUrl}`);
   });
+
+  // 11. Graceful shutdown: stop accepting new work, drain the queue workers,
+  //     flush buffered usage counters, then close the DB pool. (Fuller
+  //     graceful-shutdown lands in Phase 10; this covers the Phase-4
+  //     queue-drain + usage-flush needed so nothing in flight is lost.)
+  let shuttingDown = false;
+  async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Received ${signal}, shutting down gracefully...`);
+
+    // Stop taking new HTTP requests.
+    await new Promise((resolve) => server.close(resolve));
+
+    // Drain BullMQ workers and close queues so in-flight jobs finish/return
+    // to the queue rather than being killed mid-write.
+    try {
+      const { stopWorkers } = require('./queue/workers');
+      await stopWorkers();
+      await queueModule.closeAll();
+    } catch (err) {
+      console.error('Error stopping queue workers:', err.message);
+    }
+
+    // Flush any buffered usage counters from Redis to Postgres.
+    try {
+      const { stopFlushInterval, flush } = require('./services/usageFlushService');
+      stopFlushInterval();
+      if (redis) await flush(redis);
+    } catch (err) {
+      console.error('Error flushing usage on shutdown:', err.message);
+    }
+
+    // Close Redis + PG.
+    try { if (redis) await redis.quit(); } catch { /* already closing */ }
+    try { await pool.end(); } catch (err) { console.error('Error closing PG pool:', err.message); }
+
+    console.log('Shutdown complete');
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 boot().catch((err) => {

@@ -15,6 +15,7 @@ const usageRoutes = require('./routes/usage');
 const adminFileRoutes = require('./routes/adminFiles');
 const adminWebhookRoutes = require('./routes/adminWebhooks');
 const adminUsageRoutes = require('./routes/adminUsage');
+const jobRoutes = require('./routes/jobs');
 const setupRoutes = require('./routes/setup');
 const Queue = require('./services/queue');
 const config = require('./config');
@@ -70,6 +71,7 @@ function createApp() {
   app.use(adminFileRoutes);
   app.use(adminWebhookRoutes);
   app.use(adminUsageRoutes);
+  app.use(jobRoutes);
 
   // File routes (API key auth; the per-key rate limit runs inside auth(),
   // which is the first point at which the key — and its limit — is known)

@@ -2,15 +2,16 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const sharp = require('sharp');
-const { query } = require('../db');
+const { query, withTransaction } = require('../db');
 const { processImage, isAnimatedGif } = require('./imageProcessor');
-const { transcodeVideo, extractThumbnail, getVideoDuration, cleanup, tmpPath } = require('./videoProcessor');
+const { getVideoDuration, cleanup, tmpPath } = require('./videoProcessor');
 const { slugify } = require('../utils/slugify');
 const { detectFileType, isDangerous, sanitizeSvg, svgHasActiveContent } = require('../utils/fileType');
 const { trackUpload, trackDelete } = require('./usageService');
-const { dispatch: dispatchWebhook } = require('./webhookService');
+const outboxService = require('./outboxService');
 const fileObjectService = require('./fileObjectService');
 const storageBackendService = require('./storageBackendService');
+const { addJob, QUEUES } = require('../queue');
 const config = require('../config');
 
 const ACCESS_LEVELS = ['public', 'private', 'signed'];
@@ -235,27 +236,21 @@ async function uploadFile(file, project, options = {}, queue = null) {
       await verifyStoredObject(client, storageKey, buffer.length);
 
       const processingMs = Date.now() - start;
-      const row = await insertFileRecord({
-        projectId: project.id, storageKey, filename: path.basename(storageKey),
-        originalName: file.originalname, folder, type: 'image', mimeType: 'image/svg+xml',
-        size: buffer.length, originalSize, checksum,
-        width: metadata?.width || null, height: metadata?.height || null,
-        status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
-      });
-
-      const objects = [
-        await recordObject(row.id, backend, {
+      return finalizeSyncUpload({
+        projectId: project.id,
+        backend,
+        fileData: {
+          projectId: project.id, storageKey, filename: path.basename(storageKey),
+          originalName: file.originalname, folder, type: 'image', mimeType: 'image/svg+xml',
+          size: buffer.length, originalSize, checksum,
+          width: metadata?.width || null, height: metadata?.height || null,
+          status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
+        },
+        pendingObjects: [{
           role: 'source', storageKey, mimeType: 'image/svg+xml', size: buffer.length,
           checksum, width: metadata?.width, height: metadata?.height,
-        }),
-      ];
-
-      const storedBytes = sumObjectBytes(objects);
-      await updateProjectCounters(project.id, storedBytes);
-      const svgResponse = formatResponse(row, project.id, objects);
-      trackUpload(project.id, storedBytes).catch(() => {});
-      dispatchWebhook(project.id, 'file.uploaded', svgResponse).catch(() => {});
-      return svgResponse;
+        }],
+      });
     }
 
     const imageMetadata = await imageMetadataWithinLimits(buffer);
@@ -271,27 +266,21 @@ async function uploadFile(file, project, options = {}, queue = null) {
       await verifyStoredObject(client, storageKey, buffer.length);
 
       const processingMs = Date.now() - start;
-      const row = await insertFileRecord({
-        projectId: project.id, storageKey, filename: path.basename(storageKey),
-        originalName: file.originalname, folder, type: 'image', mimeType: 'image/gif',
-        size: buffer.length, originalSize, checksum,
-        width: imageMetadata?.width || null, height: imageMetadata?.height || null,
-        status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
-      });
-
-      const objects = [
-        await recordObject(row.id, backend, {
+      return finalizeSyncUpload({
+        projectId: project.id,
+        backend,
+        fileData: {
+          projectId: project.id, storageKey, filename: path.basename(storageKey),
+          originalName: file.originalname, folder, type: 'image', mimeType: 'image/gif',
+          size: buffer.length, originalSize, checksum,
+          width: imageMetadata?.width || null, height: imageMetadata?.height || null,
+          status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
+        },
+        pendingObjects: [{
           role: 'source', storageKey, mimeType: 'image/gif', size: buffer.length,
           checksum, width: imageMetadata?.width, height: imageMetadata?.height,
-        }),
-      ];
-
-      const storedBytes = sumObjectBytes(objects);
-      await updateProjectCounters(project.id, storedBytes);
-      const response = formatResponse(row, project.id, objects);
-      trackUpload(project.id, storedBytes).catch(() => {});
-      dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
-      return response;
+        }],
+      });
     }
 
     // Regular image -> WebP. The WebP is the optimized/canonical object; the
@@ -306,7 +295,7 @@ async function uploadFile(file, project, options = {}, queue = null) {
     const optimizedChecksum = sha256(result.buffer);
     const keepSource = policy.mode !== 'discard';
 
-    const objects = [];
+    const pendingObjects = [];
     let retentionUntil = null;
 
     if (keepSource) {
@@ -324,16 +313,18 @@ async function uploadFile(file, project, options = {}, queue = null) {
 
       await client.putBuffer(sourceKey, buffer, detected.mime);
       await verifyStoredObject(client, sourceKey, buffer.length);
-      objects.push({
-        __pending: { role: 'source', storageKey: sourceKey, mimeType: detected.mime, size: buffer.length, checksum: sourceChecksum, width: imageMetadata?.width, height: imageMetadata?.height, metadata: sourceMeta },
+      pendingObjects.push({
+        role: 'source', storageKey: sourceKey, mimeType: detected.mime, size: buffer.length,
+        checksum: sourceChecksum, width: imageMetadata?.width, height: imageMetadata?.height, metadata: sourceMeta,
       });
     }
 
     const storageKey = buildStorageKey(project.id, folder, slug, 'webp');
     await client.putBuffer(storageKey, result.buffer, 'image/webp');
     await verifyStoredObject(client, storageKey, result.size);
-    objects.push({
-      __pending: { role: 'optimized', storageKey, mimeType: 'image/webp', size: result.size, checksum: optimizedChecksum, width: result.width, height: result.height },
+    pendingObjects.push({
+      role: 'optimized', storageKey, mimeType: 'image/webp', size: result.size,
+      checksum: optimizedChecksum, width: result.width, height: result.height,
     });
 
     // files.checksum is the source/canonical checksum: the source when kept,
@@ -341,30 +332,27 @@ async function uploadFile(file, project, options = {}, queue = null) {
     const canonicalChecksum = keepSource ? sourceChecksum : optimizedChecksum;
 
     const processingMs = Date.now() - start;
-    const row = await insertFileRecord({
-      projectId: project.id, storageKey, filename: path.basename(storageKey),
-      originalName: file.originalname, folder, type: 'image', mimeType: 'image/webp',
-      size: result.size, originalSize, width: result.width, checksum: canonicalChecksum,
-      height: result.height, status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
-      retentionUntil,
+    return finalizeSyncUpload({
+      projectId: project.id,
+      backend,
+      fileData: {
+        projectId: project.id, storageKey, filename: path.basename(storageKey),
+        originalName: file.originalname, folder, type: 'image', mimeType: 'image/webp',
+        size: result.size, originalSize, width: result.width, checksum: canonicalChecksum,
+        height: result.height, status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
+        retentionUntil,
+      },
+      pendingObjects,
     });
-
-    const recorded = [];
-    for (const o of objects) {
-      recorded.push(await recordObject(row.id, backend, o.__pending));
-    }
-
-    const storedBytes = sumObjectBytes(recorded);
-    await updateProjectCounters(project.id, storedBytes);
-    const response = formatResponse(row, project.id, recorded);
-    trackUpload(project.id, storedBytes).catch(() => {});
-    dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
-    return response;
   }
 
   if (detected.category === 'video') {
-    // Store temp original, return 202, enqueue processing. Physical objects
-    // (mp4 rendition + thumbnail) are recorded when processing completes.
+    // Store temp original, return 202, enqueue durable processing. Physical
+    // objects (mp4 rendition + thumbnail) are recorded when processing
+    // completes. The files row + the file.uploaded outbox event commit
+    // atomically, then the media job is enqueued into BullMQ. Because the
+    // job is durable in Redis (and the file is 'processing' in Postgres),
+    // a worker restart resumes processing rather than losing the upload.
     const passthrough = detected.mime === 'video/mp4';
     const storageKey = buildStorageKey(project.id, folder, slug, 'mp4');
     const tempKey = `_processing_${crypto.randomBytes(8).toString('hex')}${ext}`;
@@ -373,25 +361,49 @@ async function uploadFile(file, project, options = {}, queue = null) {
     await client.putBuffer(tempKey, buffer, detected.mime);
 
     const processingMs = Date.now() - start;
-    const row = await insertFileRecord({
-      projectId: project.id, storageKey, filename: path.basename(storageKey),
-      originalName: file.originalname, folder, type: 'video', mimeType: 'video/mp4',
-      size: 0, originalSize, status: 'processing',
-      processingMs, access, uploadedBy: options.apiKeyId,
+    const { row, response } = await withTransaction(async (txClient) => {
+      const row = await insertFileRecord({
+        projectId: project.id, storageKey, filename: path.basename(storageKey),
+        originalName: file.originalname, folder, type: 'video', mimeType: 'video/mp4',
+        size: 0, originalSize, status: 'processing',
+        processingMs, access, uploadedBy: options.apiKeyId,
+      }, txClient);
+      const response = formatResponse(row, project.id, []);
+      await outboxService.emitEvent(txClient, {
+        aggregateType: 'file', aggregateId: row.id, eventType: 'file.uploaded', payload: response,
+      });
+      return { row, response };
     });
 
-    // Enqueue async processing (download from MinIO, don't hold buffer)
-    if (queue) {
+    // Enqueue processing. With Redis/BullMQ active this is a durable job whose
+    // jobId `media:<fileId>` is the idempotency key — the same asset can never
+    // be enqueued twice. Fire-and-forget so a transient Redis hiccup doesn't
+    // fail the already-committed upload; the reconciler (Phase 6/7)
+    // re-enqueues stuck 'processing' files.
+    const jobData = {
+      fileId: row.id,
+      projectId: project.id,
+      tempKey,
+      finalKey: storageKey,
+      kind: passthrough ? 'video_passthrough' : 'video',
+    };
+    const queueModule = require('../queue');
+    if (queueModule.isEnabled()) {
+      addJob(QUEUES.MEDIA, 'process', jobData, { jobId: `media:${row.id}` }).catch((err) => {
+        console.error(`Failed to enqueue media job for ${row.id}:`, err.message);
+      });
+    } else if (queue) {
+      // Single-node fallback (no Redis): process in-process via the legacy
+      // in-memory queue. Durability guarantees don't apply in this mode.
       queue.enqueue(row.id, async () => {
-        await processVideoAsync(row.id, project, tempKey, storageKey, passthrough ? 'video_passthrough' : 'video');
+        const { processMediaJob } = require('../queue/processors/media');
+        await processMediaJob(jobData);
       }).catch((err) => {
-        console.error(`Video processing failed for ${row.id}:`, err.message);
+        console.error(`In-memory media processing failed for ${row.id}:`, err.message);
       });
     }
 
-    const response = formatResponse(row, project.id, []);
     trackUpload(project.id, originalSize).catch(() => {});
-    dispatchWebhook(project.id, 'file.uploaded', response).catch(() => {});
     return { ...response, _statusCode: 202 };
   }
 
@@ -412,25 +424,19 @@ async function uploadFile(file, project, options = {}, queue = null) {
     } catch { /* noop */ }
 
     const processingMs = Date.now() - start;
-    const row = await insertFileRecord({
-      projectId: project.id, storageKey, filename: path.basename(storageKey),
-      originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
-      size: buffer.length, originalSize, duration, checksum,
-      status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
-    });
-
-    const objects = [
-      await recordObject(row.id, backend, {
+    return finalizeSyncUpload({
+      projectId: project.id,
+      backend,
+      fileData: {
+        projectId: project.id, storageKey, filename: path.basename(storageKey),
+        originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
+        size: buffer.length, originalSize, duration, checksum,
+        status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
+      },
+      pendingObjects: [{
         role: 'source', storageKey, mimeType: detected.mime, size: buffer.length, checksum,
-      }),
-    ];
-
-    const storedBytes = sumObjectBytes(objects);
-    await updateProjectCounters(project.id, storedBytes);
-    const audioResponse = formatResponse(row, project.id, objects);
-    trackUpload(project.id, storedBytes).catch(() => {});
-    dispatchWebhook(project.id, 'file.uploaded', audioResponse).catch(() => {});
-    return audioResponse;
+      }],
+    });
   }
 
   // Generic file — store as-is. The stored object is the source.
@@ -440,144 +446,28 @@ async function uploadFile(file, project, options = {}, queue = null) {
   await verifyStoredObject(client, storageKey, buffer.length);
 
   const processingMs = Date.now() - start;
-  const row = await insertFileRecord({
-    projectId: project.id, storageKey, filename: path.basename(storageKey),
-    originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
-    size: buffer.length, originalSize, checksum,
-    status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
-  });
-
-  const objects = [
-    await recordObject(row.id, backend, {
+  return finalizeSyncUpload({
+    projectId: project.id,
+    backend,
+    fileData: {
+      projectId: project.id, storageKey, filename: path.basename(storageKey),
+      originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
+      size: buffer.length, originalSize, checksum,
+      status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
+    },
+    pendingObjects: [{
       role: 'source', storageKey, mimeType: detected.mime, size: buffer.length, checksum,
-    }),
-  ];
-
-  const storedBytes = sumObjectBytes(objects);
-  await updateProjectCounters(project.id, storedBytes);
-  const fileResponse = formatResponse(row, project.id, objects);
-  trackUpload(project.id, storedBytes).catch(() => {});
-  dispatchWebhook(project.id, 'file.uploaded', fileResponse).catch(() => {});
-  return fileResponse;
-}
-
-async function processVideoAsync(fileId, project, tempKey, finalKey, fileType) {
-  const tempInput = tmpPath(path.extname(tempKey));
-  const asyncStart = Date.now();
-  const backend = await storageBackendService.getDefaultBackend();
-  const client = storageBackendService.getBackendClient(backend);
-
-  try {
-    // Download temp file from MinIO to local filesystem
-    const stream = await client.getObject(tempKey);
-    const writeStream = fs.createWriteStream(tempInput);
-    await new Promise((resolve, reject) => {
-      stream.pipe(writeStream);
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
-      stream.on('error', reject);
-    });
-
-    let transcodedPath;
-    let finalSize;
-
-    if (fileType === 'video_passthrough') {
-      // MP4 passthrough — use as-is
-      transcodedPath = tempInput;
-      const stat = await fs.promises.stat(tempInput);
-      finalSize = stat.size;
-    } else {
-      // Transcode
-      const result = await transcodeVideo(tempInput, {
-        crf: config.videoCrf,
-        maxHeight: config.videoMaxHeight,
-      });
-      transcodedPath = result.path;
-      finalSize = result.size;
-    }
-
-    // Extract thumbnail
-    const thumbPath = await extractThumbnail(transcodedPath);
-    const thumbKey = finalKey.replace('.mp4', '_thumb.webp');
-
-    // Upload final files
-    await client.putFile(finalKey, transcodedPath, 'video/mp4');
-    await client.putFile(thumbKey, thumbPath, 'image/webp');
-
-    // Get duration
-    const duration = await getVideoDuration(transcodedPath);
-
-    // Checksum + thumbnail size for the recorded objects.
-    let videoChecksum = null;
-    try { videoChecksum = await sha256File(transcodedPath); } catch { /* best effort */ }
-    let thumbSize = 0;
-    try { thumbSize = (await fs.promises.stat(thumbPath)).size; } catch { /* noop */ }
-
-    // Remove temp from MinIO
-    client.removeObject(tempKey).catch(() => {});
-
-    // Update DB
-    const asyncProcessingMs = Date.now() - asyncStart;
-    await query(
-      `UPDATE files SET status = 'done', size = $1, duration = $2, thumbnail_key = $3,
-       processing_ms = $4, checksum = $5 WHERE id = $6`,
-      [finalSize, duration, thumbKey, asyncProcessingMs, videoChecksum, fileId]
-    );
-
-    // Record the physical objects for the finished renditions. Source
-    // preservation for video is deferred to a later phase.
-    await recordObject(fileId, backend, {
-      role: 'optimized', storageKey: finalKey, mimeType: 'video/mp4', size: finalSize, checksum: videoChecksum,
-    });
-    await recordObject(fileId, backend, {
-      role: 'thumbnail', storageKey: thumbKey, mimeType: 'image/webp', size: thumbSize,
-    });
-
-    await updateProjectCounters(project.id, finalSize + thumbSize, { incrementFileCount: false });
-
-    cleanup(tempInput, transcodedPath, thumbPath);
-
-    // Fire webhook: file.processed
-    const { rows: fileRows } = await query('SELECT * FROM files WHERE id = $1', [fileId]);
-    if (fileRows.length > 0) {
-      const objects = await fileObjectService.listObjects(fileId);
-      dispatchWebhook(project.id, 'file.processed', formatResponse(fileRows[0], project.id, objects)).catch(() => {});
-    }
-  } catch (err) {
-    // On failure, copy temp to final key so something is accessible
-    try {
-      const failStream = await client.getObject(tempKey);
-      const failTmp = tmpPath('.mp4');
-      const failWrite = fs.createWriteStream(failTmp);
-      await new Promise((resolve, reject) => {
-        failStream.pipe(failWrite);
-        failWrite.on('finish', resolve);
-        failWrite.on('error', reject);
-      });
-      await client.putFile(finalKey, failTmp, 'video/mp4');
-      cleanup(failTmp);
-      client.removeObject(tempKey).catch(() => {});
-    } catch { /* noop */ }
-
-    await query(
-      "UPDATE files SET status = 'failed', error_message = $1 WHERE id = $2",
-      [err.message, fileId]
-    );
-
-    // Fire webhook: file.failed
-    dispatchWebhook(project.id, 'file.failed', { id: fileId, error: err.message }).catch(() => {});
-
-    cleanup(tempInput);
-    throw err;
-  }
+    }],
+  });
 }
 
 /**
  * Store a file_objects row and return the response-shaped summary. Errors
  * are swallowed so a bookkeeping failure never loses the already-stored
- * bytes; the returned summary is still built from the known values.
+ * bytes; the returned summary is still built from the known values. Pass a
+ * transaction `client` to record the object atomically with the files row.
  */
-async function recordObject(fileId, backend, o) {
+async function recordObject(fileId, backend, o, client = null) {
   const summary = {
     role: o.role,
     storage_key: o.storageKey,
@@ -601,19 +491,52 @@ async function recordObject(fileId, backend, o) {
       width: o.width,
       height: o.height,
       metadata: o.metadata,
-    });
+    }, client);
   } catch (err) {
     console.error(`Failed to record file_object for ${fileId} (${o.role}):`, err.message);
   }
   return summary;
 }
 
+/**
+ * Commit a finished synchronous upload atomically: the files row, its
+ * file_objects, and the outbox event all commit in one transaction, so the
+ * event can never fire for a file that failed to persist (and vice versa).
+ * Storage counters and usage tracking run after the commit — they are
+ * derived bookkeeping, not part of the atomic unit.
+ *
+ * @returns the API response object.
+ */
+async function finalizeSyncUpload({ projectId, fileData, pendingObjects, backend, eventType = 'file.uploaded' }) {
+  const { recorded, response } = await withTransaction(async (client) => {
+    const row = await insertFileRecord(fileData, client);
+    const recorded = [];
+    for (const o of pendingObjects) {
+      recorded.push(await recordObject(row.id, backend, o, client));
+    }
+    const response = formatResponse(row, projectId, recorded);
+    await outboxService.emitEvent(client, {
+      aggregateType: 'file',
+      aggregateId: row.id,
+      eventType,
+      payload: response,
+    });
+    return { recorded, response };
+  });
+
+  const storedBytes = sumObjectBytes(recorded);
+  await updateProjectCounters(projectId, storedBytes);
+  trackUpload(projectId, storedBytes).catch(() => {});
+  return response;
+}
+
 function sumObjectBytes(objects) {
   return objects.reduce((total, o) => total + (o.size || 0), 0);
 }
 
-async function insertFileRecord(data) {
-  const { rows } = await query(
+async function insertFileRecord(data, client = null) {
+  const exec = client ? (text, params) => client.query(text, params) : query;
+  const { rows } = await exec(
     `INSERT INTO files (project_id, storage_key, filename, original_name, folder, type, mime_type,
      size, original_size, width, height, duration, thumbnail_key, status, processing_ms, access,
      uploaded_by, checksum, retention_until)
@@ -703,8 +626,22 @@ async function deleteFile(fileId, project) {
     objects = await fileObjectService.listObjects(fileId);
   } catch { /* fall back to legacy keys below */ }
 
-  // Soft delete
-  await query('UPDATE files SET deleted_at = NOW() WHERE id = $1', [fileId]);
+  // Soft delete + emit file.deleted atomically: the tombstone and the event
+  // commit together, so a crash can neither drop the event for a completed
+  // delete nor fire it for a delete that rolled back.
+  const deletedEvent = {
+    id: file.id,
+    filename: file.filename,
+    storage_key: file.storage_key,
+    type: file.type,
+    size: file.size,
+  };
+  await withTransaction(async (client) => {
+    await client.query('UPDATE files SET deleted_at = NOW() WHERE id = $1', [fileId]);
+    await outboxService.emitEvent(client, {
+      aggregateType: 'file', aggregateId: file.id, eventType: 'file.deleted', payload: deletedEvent,
+    });
+  });
 
   let freedBytes;
   if (objects.length > 0) {
@@ -729,15 +666,8 @@ async function deleteFile(fileId, project) {
     [freedBytes, project.id]
   ).catch(() => {});
 
-  // Track usage and fire webhook
+  // Track usage (the file.deleted event was already emitted atomically above)
   trackDelete(project.id).catch(() => {});
-  dispatchWebhook(project.id, 'file.deleted', {
-    id: file.id,
-    filename: file.filename,
-    storage_key: file.storage_key,
-    type: file.type,
-    size: file.size,
-  }).catch(() => {});
 
   return {
     deleted: true,
@@ -835,4 +765,16 @@ async function getFile(fileId, project) {
   return formatResponse(rows[0], project.id, objects);
 }
 
-module.exports = { uploadFile, deleteFile, listFiles, getFile, ACCESS_LEVELS };
+module.exports = {
+  uploadFile,
+  deleteFile,
+  listFiles,
+  getFile,
+  ACCESS_LEVELS,
+  // Exported for the BullMQ media processor, which reuses these rather than
+  // duplicating rendition bookkeeping.
+  formatResponse,
+  recordObject,
+  updateProjectCounters,
+  sha256File,
+};

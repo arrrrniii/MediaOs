@@ -30,6 +30,7 @@ export default async function ProjectLayout({
     { href: `/dashboard/projects/${id}/files`, label: 'Files', icon: 'Files' },
     { href: `/dashboard/projects/${id}/keys`, label: 'API Keys', icon: 'Key' },
     { href: `/dashboard/projects/${id}/webhooks`, label: 'Webhooks', icon: 'Webhook' },
+    { href: `/dashboard/projects/${id}/jobs`, label: 'Jobs', icon: 'ListChecks' },
     { href: `/dashboard/projects/${id}/usage`, label: 'Usage', icon: 'BarChart3' },
     { href: `/dashboard/projects/${id}/settings`, label: 'Settings', icon: 'Settings' },
   ];
