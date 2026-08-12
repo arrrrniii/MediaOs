@@ -111,6 +111,57 @@ migrations are forward-only.
 Supported paths: upgrades from the previous minor release are tested in
 CI; skipping releases requires stepping through each minor version.
 
+## Production deployment
+
+MediaOS ships as a Docker Compose stack. Two compose files:
+
+- `docker-compose.yml` — builds the worker/dashboard images from source.
+- `docker-compose.hub.yml` — pulls pre-built images from Docker Hub.
+
+Both pin every third-party image by digest, run the worker as a non-root user,
+apply per-service CPU/memory limits and log rotation, and provision two
+least-privilege MinIO service accounts (worker read/write, imgproxy read-only)
+via a one-shot `minio-setup` container — the MinIO root credentials are used
+only for that provisioning.
+
+### First deploy
+
+```bash
+cp .env.example .env
+# Replace EVERY changeme_* value and set MASTER_KEY, INTERNAL_API_SECRET,
+# STORAGE_ENCRYPTION_KEY (32-byte hex), ADMIN_EMAIL/ADMIN_PASSWORD, PUBLIC_URL.
+#   openssl rand -hex 32   # for secrets/keys
+docker compose --profile dashboard up -d          # or -f docker-compose.hub.yml
+```
+
+On first boot the worker runs migrations (advisory-locked, so replicas are
+safe), seeds the admin account + owner membership, and starts the BullMQ
+workers, outbox poller, lifecycle scanner, reconciler, and health snapshots.
+Put a TLS-terminating reverse proxy (see `deploy/nginx.conf` / `deploy/Caddyfile`)
+in front; the worker port binds to loopback so all public traffic goes through
+the proxy. Serve media from a separate cookie-free domain (`deploy/nginx.conf`
+has a template).
+
+### Health, metrics, and self-healing
+
+- `GET /health`, `/health/live`, `/health/ready` — liveness/readiness.
+- `GET /metrics` — Prometheus (needs `MASTER_KEY` unless `METRICS_PUBLIC=true`).
+- Set `OTEL_EXPORTER_OTLP_ENDPOINT` to ship traces.
+- The **System** dashboard page (visible to `ADMIN_EMAIL`) shows healthy/missing/
+  orphan/corrupt objects, stuck jobs, failed webhooks, pending restores, and the
+  last backup / last restore-test timestamps, plus a "Run now" reconcile button.
+- Enable `RESTORE_TEST_ENABLED=true` to schedule an archive→restore self-test.
+
+### CI gates (`.github/workflows/ci.yml`)
+
+Worker unit tests; worker integration against real Postgres/Redis/MinIO
+(migrations + the durable-queue, archive/restore, reconciler, HLS, and
+essential-failure suites); migrate-from-previous-release; dashboard
+lint/type-check/build; dashboard Playwright E2E against the full stack; SDK
+build/test; dependency audit (fails on high+); Docker Compose smoke test
+(`scripts/smoke-test.sh`); container vulnerability scan (Trivy) + SBOM
+generation (SPDX).
+
 ## Database roles and pooling
 
 By default the worker connects, migrates, and serves as a single `PG_USER`.
