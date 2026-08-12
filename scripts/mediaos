@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────
+#  mediaos — one-command operator CLI for a MediaOS deployment.
+#
+#  Install (on the server, as root):
+#    curl -fsSL https://raw.githubusercontent.com/arrrrniii/MediaOs/main/scripts/mediaos \
+#      -o /usr/local/bin/mediaos && chmod +x /usr/local/bin/mediaos
+#
+#  Then:
+#    mediaos update     # back up, pull the latest images + compose, restart, health-check
+#    mediaos status     # container + health status
+#    mediaos logs [svc] # follow logs (default: worker)
+#    mediaos backup     # DB + .env + compose snapshot
+#    mediaos restart    # restart the stack
+#    mediaos rollback   # restore the last compose backup and restart
+#    mediaos health     # just the /health JSON
+#
+#  Config (optional) — /etc/mediaos.conf overrides these defaults:
+#    MEDIAOS_DIR=/root/mediaos
+#    COMPOSE_FILE=docker-compose.yml
+#    WITH_DASHBOARD=1
+#    API_PORT=3000
+#    RAW_BASE=https://raw.githubusercontent.com/arrrrniii/MediaOs/main
+# ─────────────────────────────────────────────────────────────
+set -euo pipefail
+
+# ── defaults + config ───────────────────────────────────────
+MEDIAOS_DIR="${MEDIAOS_DIR:-/root/mediaos}"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
+WITH_DASHBOARD="${WITH_DASHBOARD:-1}"
+API_PORT="${API_PORT:-3000}"
+RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/arrrrniii/MediaOs/main}"
+[ -f /etc/mediaos.conf ] && . /etc/mediaos.conf
+
+c_grn=$'\033[1;32m'; c_red=$'\033[1;31m'; c_cyn=$'\033[1;36m'; c_yel=$'\033[1;33m'; c_off=$'\033[0m'
+log()  { printf '%s== %s%s\n' "$c_cyn" "$*" "$c_off"; }
+ok()   { printf '%s%s%s\n' "$c_grn" "$*" "$c_off"; }
+warn() { printf '%s%s%s\n' "$c_yel" "$*" "$c_off"; }
+die()  { printf '%sERROR: %s%s\n' "$c_red" "$*" "$c_off" >&2; exit 1; }
+
+command -v docker >/dev/null || die "docker is not installed"
+docker compose version >/dev/null 2>&1 || die "'docker compose' (v2) is required"
+cd "$MEDIAOS_DIR" 2>/dev/null || die "MEDIAOS_DIR not found: $MEDIAOS_DIR (set it in /etc/mediaos.conf)"
+[ -f "$COMPOSE_FILE" ] || die "compose file not found: $MEDIAOS_DIR/$COMPOSE_FILE"
+
+PROFILE_ARGS=(); [ "$WITH_DASHBOARD" = "1" ] && PROFILE_ARGS=(--profile dashboard)
+dc() { docker compose -f "$COMPOSE_FILE" "${PROFILE_ARGS[@]}" "$@"; }
+
+# ── helpers ─────────────────────────────────────────────────
+do_backup() {
+  mkdir -p backups
+  local stamp; stamp="$(date +%F_%H%M%S)"
+  cp "$COMPOSE_FILE" "backups/${COMPOSE_FILE}.${stamp}.bak"
+  cp .env "backups/.env.${stamp}.bak" 2>/dev/null || true
+  if docker ps --format '{{.Names}}' | grep -qx mv-postgres; then
+    log "Backing up Postgres -> backups/pg_${stamp}.sql.gz"
+    docker exec mv-postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > "backups/pg_${stamp}.sql.gz" \
+      || warn "pg_dump failed (first run?) — continuing"
+  else
+    warn "mv-postgres not running — skipping DB dump"
+  fi
+  ok "Backup written to $MEDIAOS_DIR/backups (stamp ${stamp})"
+}
+
+ensure_secret() {  # KEY [bytes] [prefix]
+  local key="$1" bytes="${2:-32}" prefix="${3:-}" cur
+  [ -f .env ] || touch .env
+  cur="$(grep -E "^${key}=" .env | head -1 | cut -d= -f2- || true)"
+  case "$cur" in
+    ""|changeme*|*your_secret_here*)
+      if grep -qE "^${key}=" .env; then local t; t="$(mktemp)"; grep -vE "^${key}=" .env > "$t"; mv "$t" .env; fi
+      echo "${key}=${prefix}$(openssl rand -hex "$bytes")" >> .env
+      ok "  generated ${key}"
+      ;;
+  esac
+}
+
+wait_health() {
+  log "Waiting for worker /health"
+  local i
+  for i in $(seq 1 60); do
+    if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+      curl -fsS "http://127.0.0.1:${API_PORT}/health"; echo
+      ok "✅ Healthy."
+      return 0
+    fi
+    sleep 2
+  done
+  warn "worker did not report healthy in time — recent logs:"
+  dc logs --tail=60 worker || true
+  return 1
+}
+
+# ── commands ────────────────────────────────────────────────
+cmd_update() {
+  log "MediaOS update"
+  do_backup
+  log "Fetching the latest compose (${RAW_BASE}/docker-compose.hub.yml -> ${COMPOSE_FILE})"
+  local tmp; tmp="$(mktemp)"
+  curl -fsSL "${RAW_BASE}/docker-compose.hub.yml" -o "$tmp" || die "could not download the latest compose file"
+  # sanity: must be a compose file before we overwrite
+  grep -q "services:" "$tmp" || die "downloaded file does not look like a compose file; aborting"
+  mv "$tmp" "$COMPOSE_FILE"
+
+  log "Ensuring required secrets in .env"
+  ensure_secret INTERNAL_API_SECRET 32
+  ensure_secret STORAGE_ENCRYPTION_KEY 32
+  ensure_secret WORKER_MINIO_SECRET_KEY 16
+  ensure_secret IMGPROXY_MINIO_SECRET_KEY 16
+  ensure_secret MASTER_KEY 24 "mv_master_"
+
+  log "Pulling images"
+  if ! dc pull; then
+    die "pull failed. If the GHCR packages are private, run:
+    docker login ghcr.io -u <github-user>   (PAT with read:packages)
+  or make the mediaos-worker / mediaos-dashboard packages public on GitHub."
+  fi
+
+  log "Rolling the stack (migrations run on worker boot)"
+  dc up -d
+
+  wait_health && ok "Update complete." || die "Update finished but health check failed — see logs above. 'mediaos rollback' restores the previous compose."
+}
+
+cmd_status()  { log "Containers"; dc ps; echo; log "Health"; curl -fsS "http://127.0.0.1:${API_PORT}/health" || warn "worker /health not reachable"; echo; }
+cmd_health()  { curl -fsS "http://127.0.0.1:${API_PORT}/health"; echo; }
+cmd_logs()    { dc logs -f --tail=100 "${1:-worker}"; }
+cmd_backup()  { log "Backup"; do_backup; }
+cmd_restart() { log "Restart"; dc restart; wait_health || true; }
+cmd_stop()    { log "Stopping"; dc down; }
+cmd_start()   { log "Starting"; dc up -d; wait_health || true; }
+
+cmd_rollback() {
+  local last
+  last="$(ls -1t backups/${COMPOSE_FILE}.*.bak 2>/dev/null | head -1 || true)"
+  [ -n "$last" ] || die "no compose backup found in backups/"
+  log "Rolling back compose to: $last"
+  cp "$COMPOSE_FILE" "backups/${COMPOSE_FILE}.pre-rollback.$(date +%F_%H%M%S).bak"
+  cp "$last" "$COMPOSE_FILE"
+  dc pull || true
+  dc up -d
+  wait_health || warn "health still failing after rollback — check 'mediaos logs'"
+  warn "NOTE: rollback restores the previous IMAGES/compose, not the database. If a migration changed data, restore backups/pg_*.sql.gz per docs/OPERATIONS.md."
+}
+
+usage() {
+  cat <<EOF
+mediaos — operator CLI  (dir: ${MEDIAOS_DIR}, compose: ${COMPOSE_FILE})
+
+  mediaos update      Back up, pull latest images + compose, restart, health-check
+  mediaos status      Container + health status
+  mediaos health      Print the worker /health JSON
+  mediaos logs [svc]  Follow logs (default: worker)
+  mediaos backup      Snapshot DB + .env + compose
+  mediaos restart     Restart the stack
+  mediaos start|stop  Start / stop the stack
+  mediaos rollback    Restore the last compose backup and restart
+EOF
+}
+
+case "${1:-}" in
+  update)   cmd_update ;;
+  status)   cmd_status ;;
+  health)   cmd_health ;;
+  logs)     shift; cmd_logs "${1:-worker}" ;;
+  backup)   cmd_backup ;;
+  restart)  cmd_restart ;;
+  start)    cmd_start ;;
+  stop)     cmd_stop ;;
+  rollback) cmd_rollback ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command '$1' (try: mediaos help)" ;;
+esac
