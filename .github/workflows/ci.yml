@@ -45,15 +45,6 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 10
-      minio:
-        image: bitnami/minio:2024
-        env:
-          MINIO_ROOT_USER: mvadmin
-          MINIO_ROOT_PASSWORD: test_minio_password
-        ports: ['9000:9000']
-        options: >-
-          --health-cmd "mc ready local || curl -f http://localhost:9000/minio/health/live"
-          --health-interval 5s --health-timeout 3s --health-retries 20
     env:
       PG_HOST: localhost
       PG_DATABASE: mediaos
@@ -63,6 +54,7 @@ jobs:
       MINIO_ENDPOINT: localhost
       MINIO_ACCESS_KEY: mvadmin
       MINIO_SECRET_KEY: test_minio_password
+      MINIO_BUCKET: mediaos
       STORAGE_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +65,21 @@ jobs:
           cache-dependency-path: worker/package-lock.json
       - name: Install ffmpeg (video pipeline)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      # MinIO can't run as a GHA service container (its server needs a command,
+      # which service containers can't set), so start it explicitly and create
+      # the bucket the tests expect.
+      - name: Start MinIO + create bucket
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=mvadmin -e MINIO_ROOT_PASSWORD=test_minio_password \
+            minio/minio server /data
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:9000/minio/health/live && break
+            sleep 2
+          done
+          docker run --rm --network host --entrypoint sh minio/mc -c '
+            mc alias set m http://localhost:9000 mvadmin test_minio_password &&
+            mc mb --ignore-existing m/mediaos'
       - run: npm ci
       - name: Run migrations against real Postgres
         run: npm run migrate
@@ -263,22 +270,18 @@ jobs:
         run: docker build -t mediaos-worker:ci ./worker
       - name: Build dashboard image
         run: docker build -t mediaos-dashboard:ci ./dashboard
-      - name: Trivy scan (worker)
-        uses: aquasecurity/trivy-action@0.24.0
-        with:
-          image-ref: mediaos-worker:ci
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: '0' # report, do not fail the build on base-image CVEs
-          format: table
-      - name: Trivy scan (dashboard)
-        uses: aquasecurity/trivy-action@0.24.0
-        with:
-          image-ref: mediaos-dashboard:ci
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: '0'
-          format: table
+      # Install Trivy from its official APT repo (avoids depending on a pinned
+      # marketplace-action version). Report-only: base-image CVEs don't fail CI.
+      - name: Install Trivy
+        run: |
+          sudo apt-get install -y wget gnupg
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update && sudo apt-get install -y trivy
+      - name: Trivy scan (worker + dashboard)
+        run: |
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 mediaos-worker:ci
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 mediaos-dashboard:ci
       - name: Generate SBOMs (SPDX)
         uses: anchore/sbom-action@v0
         with:
