@@ -110,11 +110,12 @@ describe('Files API', () => {
       expect(res.body.code).toBe('NO_FILE');
     });
 
-    it('should return 202 for video files (async processing)', async () => {
+    it('should store video files immediately without streaming derivatives', async () => {
       setupAuthenticatedRequest();
       mockDb.onQuery('INSERT INTO files', {
-        rows: [{ ...testFile, type: 'video', status: 'processing' }],
+        rows: [{ ...testFile, type: 'video', mime_type: 'video/quicktime', status: 'done' }],
       });
+      mockDb.onQuery('UPDATE projects SET storage_used', { rowCount: 1 });
 
       const res = await request(app)
         .post('/api/v1/upload')
@@ -124,8 +125,42 @@ describe('Files API', () => {
           contentType: 'video/quicktime',
         });
 
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('done');
+      expect(res.body.has_hls).toBe(false);
+    });
+
+    it('should return 202 when video streaming is explicitly requested', async () => {
+      setupAuthenticatedRequest();
+      mockDb.onQuery('INSERT INTO files', {
+        rows: [{ ...testFile, type: 'video', status: 'processing' }],
+      });
+
+      const res = await request(app)
+        .post('/api/v1/upload/stream')
+        .set('X-API-Key', FULL_KEY)
+        .attach('file', Buffer.from('fake-video'), {
+          filename: 'test.mov',
+          contentType: 'video/quicktime',
+        });
+
       expect(res.status).toBe(202);
       expect(res.body.status).toBe('processing');
+    });
+
+    it('should reject non-video files on the streaming endpoint', async () => {
+      setupAuthenticatedRequest();
+
+      const res = await request(app)
+        .post('/api/v1/upload/stream')
+        .set('X-API-Key', FULL_KEY)
+        .attach('file', Buffer.from('%PDF-fake'), {
+          filename: 'document.pdf',
+          contentType: 'application/pdf',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('STREAMING_REQUIRES_VIDEO');
     });
 
     it('should upload generic files as-is', async () => {

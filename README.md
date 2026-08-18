@@ -381,7 +381,8 @@ Authorization: Bearer mv_master_xxxxxxxxxxxxxxxxxxxx
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/api/v1/upload` | API Key (`upload`) | Upload single file |
+| `POST` | `/api/v1/upload` | API Key (`upload`) | Upload and store a single file as-is; videos are immediately available without HLS processing |
+| `POST` | `/api/v1/upload/stream` | API Key (`upload`) | Upload a video for MP4/HLS streaming processing |
 | `POST` | `/api/v1/upload/bulk` | API Key (`upload`) | Upload up to 20 files |
 
 **Single upload:**
@@ -392,6 +393,19 @@ curl -X POST http://localhost:3000/api/v1/upload \
   -F "file=@image.jpg" \
   -F "folder=avatars" \
   -F "access=public"
+```
+
+Normal video uploads are stored once and return `200` with `status: "done"`.
+Use the dedicated streaming endpoint only when adaptive HLS playback is needed;
+it returns `202` while FFmpeg creates the HLS ladder, progressive MP4, poster,
+and thumbnail:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/upload/stream \
+  -H "X-API-Key: mv_live_..." \
+  -H "Idempotency-Key: video:stable-source-id" \
+  -F "file=@video.mp4" \
+  -F "folder=videos"
 ```
 
 **Bulk upload:**

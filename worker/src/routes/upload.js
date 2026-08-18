@@ -17,46 +17,56 @@ function invalidAccess(access) {
   return access !== undefined && access !== null && access !== '' && !ACCESS_LEVELS.includes(access);
 }
 
-// POST /api/v1/upload — single file upload
-router.post('/api/v1/upload', auth('upload'), upload.single('file'), async (req, res, next) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        error: 'No file provided',
-        code: 'NO_FILE',
-      });
+function singleUpload(streaming = false) {
+  return async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: 'No file provided',
+          code: 'NO_FILE',
+        });
+      }
+
+      const options = {
+        folder: req.query.folder || req.body.folder,
+        name: req.query.name || req.body.name,
+        access: req.query.access || req.body.access,
+        apiKeyId: req.apiKey.id,
+        // Request correlation id (from requestId middleware) threaded into the
+        // enqueued media job so it traces back to this upload.
+        requestId: req.id,
+        // Idempotency-Key header: a repeated key returns the original file
+        // instead of storing a second copy.
+        idempotencyKey: req.headers['idempotency-key'] || req.query.idempotency_key,
+        // Normal uploads are storage-only. The dedicated /upload/stream route
+        // explicitly opts a video into the expensive MP4/HLS pipeline.
+        streaming,
+      };
+
+      if (invalidAccess(options.access)) {
+        return res.status(400).json({
+          error: 'Invalid access level. Use: public, private, signed',
+          code: 'INVALID_ACCESS',
+        });
+      }
+
+      const result = await uploadFile(req.file, req.project, options, req.app.locals.queue);
+      const statusCode = result._statusCode || 200;
+      delete result._statusCode;
+
+      res.set('Cache-Control', 'no-store');
+      res.status(statusCode).json(result);
+    } catch (err) {
+      next(err);
     }
+  };
+}
 
-    const options = {
-      folder: req.query.folder || req.body.folder,
-      name: req.query.name || req.body.name,
-      access: req.query.access || req.body.access,
-      apiKeyId: req.apiKey.id,
-      // Request correlation id (from requestId middleware) threaded into the
-      // enqueued media job so it traces back to this upload.
-      requestId: req.id,
-      // Idempotency-Key header: a repeated key returns the original file
-      // instead of storing a second copy.
-      idempotencyKey: req.headers['idempotency-key'] || req.query.idempotency_key,
-    };
+// POST /api/v1/upload — store media as-is (no video transcoding/HLS).
+router.post('/api/v1/upload', auth('upload'), upload.single('file'), singleUpload(false));
 
-    if (invalidAccess(options.access)) {
-      return res.status(400).json({
-        error: 'Invalid access level. Use: public, private, signed',
-        code: 'INVALID_ACCESS',
-      });
-    }
-
-    const result = await uploadFile(req.file, req.project, options, req.app.locals.queue);
-    const statusCode = result._statusCode || 200;
-    delete result._statusCode;
-
-    res.set('Cache-Control', 'no-store');
-    res.status(statusCode).json(result);
-  } catch (err) {
-    next(err);
-  }
-});
+// POST /api/v1/upload/stream — opt a video into MP4/HLS processing.
+router.post('/api/v1/upload/stream', auth('upload'), upload.single('file'), singleUpload(true));
 
 // POST /api/v1/upload/bulk — multiple file upload (max 20)
 router.post('/api/v1/upload/bulk', auth('upload'), upload.array('files', 20), async (req, res, next) => {

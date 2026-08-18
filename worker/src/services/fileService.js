@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const sharp = require('sharp');
 const { query, withTransaction } = require('../db');
 const { processImage, isAnimatedGif } = require('./imageProcessor');
-const { getVideoDuration, cleanup, tmpPath } = require('./videoProcessor');
+const { getVideoDuration, probeVideo, cleanup, tmpPath } = require('./videoProcessor');
 const { slugify } = require('../utils/slugify');
 const { detectFileType, isDangerous, sanitizeSvg, svgHasActiveContent } = require('../utils/fileType');
 const { trackUpload, trackDelete } = require('./usageService');
@@ -353,11 +353,14 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
 
   assertWithinSizeLimit(project, buffer.length);
   assertTypeAllowed(project, detected.category);
+  if (options.streaming === true && detected.category !== 'video') {
+    throw uploadError(400, 'STREAMING_REQUIRES_VIDEO', 'The streaming upload endpoint accepts video files only');
+  }
 
-  // Content dedup — non-video only (video is stored async and owned by the
-  // Phase-8b pipeline). If another live file in this project already holds the
-  // same source bytes at the same access level, reuse its physical objects.
-  if (detected.category !== 'video') {
+  // Content dedup — storage-only videos participate just like other files.
+  // Streaming videos remain excluded because their physical objects are
+  // created asynchronously by the Phase-8b pipeline.
+  if (detected.category !== 'video' || options.streaming !== true) {
     const contentHash = sha256(buffer);
     const target = await findDedupTarget(project.id, contentHash, access);
     if (target) {
@@ -498,6 +501,48 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
         retentionUntil,
       },
       pendingObjects,
+    });
+  }
+
+  if (detected.category === 'video' && options.streaming !== true) {
+    // Ordinary CDN upload: keep the original video as one immediately
+    // available object. No HLS ladder, progressive copy, poster, or thumbnail
+    // is generated unless the caller uses POST /api/v1/upload/stream.
+    const storedExt = ext.substring(1) || 'mp4';
+    const storageKey = buildStorageKey(project.id, folder, slug, storedExt);
+    const checksum = sha256(buffer);
+    await client.putBuffer(storageKey, buffer, detected.mime);
+    await verifyStoredObject(client, storageKey, buffer.length);
+
+    let duration = null;
+    let width = null;
+    let height = null;
+    const localPath = tmpPath(ext || '.mp4');
+    try {
+      await fs.promises.writeFile(localPath, buffer);
+      const probe = await probeVideo(localPath);
+      duration = probe.duration;
+      width = probe.width;
+      height = probe.height;
+    } catch { /* media metadata is best-effort */ } finally {
+      cleanup(localPath);
+    }
+
+    const processingMs = Date.now() - start;
+    return finalizeSyncUpload({
+      projectId: project.id,
+      backend,
+      fileData: {
+        projectId: project.id, storageKey, filename: path.basename(storageKey),
+        originalName: file.originalname, folder, type: 'video', mimeType: detected.mime,
+        size: buffer.length, originalSize, width, height, duration, checksum,
+        contentHash: checksum, status: 'done', processingMs, access,
+        uploadedBy: options.apiKeyId,
+      },
+      pendingObjects: [{
+        role: 'source', storageKey, mimeType: detected.mime, size: buffer.length,
+        checksum, width, height,
+      }],
     });
   }
 
