@@ -1,10 +1,10 @@
 import { getAccountContext } from '@/lib/session';
 import { accountFetch } from '@/lib/api';
 import { formatBytes, formatRelativeTime } from '@/lib/utils';
-import type { Project, FileRecord, PaginatedResponse } from '@/lib/types';
+import type { Project, FileRecord, PaginatedResponse, UsageData } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Upload, ExternalLink, FileIcon } from 'lucide-react';
+import { Upload, FileIcon } from 'lucide-react';
 import Link from 'next/link';
 
 export default async function ProjectDetailPage({
@@ -35,11 +35,11 @@ export default async function ProjectDetailPage({
 
   let bandwidth = 0;
   try {
-    const usage = await accountFetch<{ bandwidth_bytes?: number; download_bytes?: number }>(
+    const usage = await accountFetch<UsageData>(
       ctx,
       `/api/v1/projects/${id}/usage`,
     );
-    bandwidth = usage.bandwidth_bytes || usage.download_bytes || 0;
+    bandwidth = Number(usage.bandwidth?.used || 0);
   } catch {
     // usage endpoint may not be available
   }

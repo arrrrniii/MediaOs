@@ -21,8 +21,8 @@ export default async function ProjectsPage() {
     }
   }
 
-  const totalFiles = projects.reduce((sum, project) => sum + project.file_count, 0);
-  const totalStorage = projects.reduce((sum, project) => sum + project.storage_used, 0);
+  const totalFiles = projects.reduce((sum, project) => sum + Number(project.file_count || 0), 0);
+  const totalStorage = projects.reduce((sum, project) => sum + Number(project.storage_used || 0), 0);
   const lastUpdated = projects.reduce<string | null>((latest, project) => {
     if (!latest) return project.updated_at;
     return new Date(project.updated_at) > new Date(latest) ? project.updated_at : latest;
