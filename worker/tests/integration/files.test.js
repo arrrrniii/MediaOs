@@ -2,6 +2,7 @@ const request = require('supertest');
 const path = require('path');
 const { createTestApp, mockDb, mockMinio, MASTER_KEY, testProject, testApiKey, testFile } = require('../setup');
 const { sha256 } = require('../../src/utils/crypto');
+const videoProcessor = require('../../src/services/videoProcessor');
 
 let app;
 
@@ -128,6 +129,55 @@ describe('Files API', () => {
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('done');
       expect(res.body.has_hls).toBe(false);
+    });
+
+    it('should normalize an audio-only MP4 voice note to audio/mp4 with an m4a key', async () => {
+      setupAuthenticatedRequest();
+      videoProcessor.probeVideo.mockResolvedValueOnce({
+        duration: 8.25,
+        width: null,
+        height: null,
+        hasVideo: false,
+        hasAudio: true,
+      });
+      mockDb.onQuery('INSERT INTO files', {
+        rows: [{
+          ...testFile,
+          storage_key: `${testProject.id}/voice-note-abc123.m4a`,
+          filename: 'voice-note-abc123.m4a',
+          original_name: 'voice-note.mp4',
+          type: 'audio',
+          mime_type: 'audio/mp4',
+          duration: 8.25,
+          status: 'done',
+        }],
+      });
+      mockDb.onQuery('UPDATE projects SET storage_used', { rowCount: 1 });
+
+      // Minimal ISO BMFF header with a generic isom brand: magic-byte
+      // detection alone calls this video/mp4, then ffprobe identifies audio-only.
+      const audioOnlyMp4 = Buffer.from([
+        0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70,
+        0x69, 0x73, 0x6f, 0x6d, 0x00, 0x00, 0x00, 0x00,
+        0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x32,
+      ]);
+
+      const res = await request(app)
+        .post('/api/v1/upload')
+        .set('X-API-Key', FULL_KEY)
+        .attach('file', audioOnlyMp4, {
+          filename: 'voice-note.mp4',
+          contentType: 'video/mp4',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.type).toBe('audio');
+      expect(res.body.mime_type).toBe('audio/mp4');
+      const dedupLookup = mockDb.queryCalls.find((call) => call.text.includes('AND content_hash = $2'));
+      expect(dedupLookup.params[3]).toBe('audio');
+      expect(mockMinio.putBufferCalls).toHaveLength(1);
+      expect(mockMinio.putBufferCalls[0].key).toMatch(/\.m4a$/);
+      expect(mockMinio.putBufferCalls[0].contentType).toBe('audio/mp4');
     });
 
     it('should return 202 when video streaming is explicitly requested', async () => {

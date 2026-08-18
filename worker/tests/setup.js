@@ -226,7 +226,7 @@ jest.mock('../src/services/videoProcessor', () => ({
   gifToMp4: jest.fn(async () => ({ path: '/tmp/gif.mp4', size: 3000 })),
   cleanup: jest.fn(),
   tmpPath: jest.fn((ext) => `/tmp/mv-test${ext}`),
-  probeVideo: jest.fn(async () => ({ duration: 10.5, width: 1280, height: 720, hasAudio: true })),
+  probeVideo: jest.fn(async () => ({ duration: 10.5, width: 1280, height: 720, hasVideo: true, hasAudio: true })),
   transcodeHls: jest.fn(async () => ({
     masterPath: '/tmp/hls/master.m3u8',
     posterPath: '/tmp/hls/poster.jpg',

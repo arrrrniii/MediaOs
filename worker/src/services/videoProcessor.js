@@ -90,12 +90,13 @@ async function getVideoDuration(inputPath) {
 
 /**
  * Probe a video for the facts the HLS pipeline needs: duration, source pixel
- * dimensions, and whether it carries an audio stream (so we know whether to
- * emit an AAC track / mp4a codec tag). Returns nulls on failure rather than
+ * dimensions, and whether it carries video/audio streams. Stream presence
+ * also lets upload handling distinguish an audio-only MP4 voice note from a
+ * real video before choosing its MIME type and extension. Returns nulls on failure rather than
  * throwing, so the caller decides how to degrade.
  */
 async function probeVideo(inputPath) {
-  const out = { duration: null, width: null, height: null, hasAudio: false };
+  const out = { duration: null, width: null, height: null, hasVideo: false, hasAudio: false };
   try {
     const { stdout } = await execFileAsync('ffprobe', [
       '-v', 'error',
@@ -106,9 +107,12 @@ async function probeVideo(inputPath) {
     const data = JSON.parse(stdout);
     if (data.format && data.format.duration) out.duration = parseFloat(data.format.duration) || null;
     for (const s of data.streams || []) {
-      if (s.codec_type === 'video' && out.width == null) {
-        out.width = s.width || null;
-        out.height = s.height || null;
+      if (s.codec_type === 'video') {
+        out.hasVideo = true;
+        if (out.width == null) {
+          out.width = s.width || null;
+          out.height = s.height || null;
+        }
       }
       if (s.codec_type === 'audio') out.hasAudio = true;
     }

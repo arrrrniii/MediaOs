@@ -243,16 +243,17 @@ async function recordIdempotency(projectId, key, fileId) {
  * never expose bytes at a different access level. Returns the CANONICAL file
  * row (following an existing dedup_of so chains collapse to one root).
  */
-async function findDedupTarget(projectId, contentHash, access) {
+async function findDedupTarget(projectId, contentHash, access, type) {
   if (!contentHash) return null;
   const { rows } = await query(
     `SELECT id, project_id, storage_key, thumbnail_key, type, mime_type, size, width, height,
             checksum, content_hash, access, dedup_of
      FROM files
-     WHERE project_id = $1 AND content_hash = $2 AND access = $3 AND deleted_at IS NULL
+     WHERE project_id = $1 AND content_hash = $2 AND access = $3 AND type = $4
+       AND deleted_at IS NULL
      ORDER BY (dedup_of IS NULL) DESC, created_at ASC
      LIMIT 1`,
-    [projectId, contentHash, access]
+    [projectId, contentHash, access, type]
   );
   if (rows.length === 0) return null;
   const match = rows[0];
@@ -347,7 +348,25 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
   const folder = sanitizeFolder(options.folder);
   const policy = getOriginalPolicy(project);
 
-  const { detected, buffer } = inspectUpload(file.buffer, file.originalname);
+  let { detected, buffer } = inspectUpload(file.buffer, file.originalname);
+  let mediaProbe = null;
+
+  // Instagram voice notes can arrive as an ISO MP4 container whose filename
+  // and declared MIME both say video/mp4, even though it contains audio only.
+  // Magic bytes identify the container, not its streams, so probe ambiguous
+  // MP4s once before applying type policy or choosing the storage extension.
+  if (detected.category === 'video' && detected.mime === 'video/mp4') {
+    const probePath = tmpPath('.mp4');
+    try {
+      await fs.promises.writeFile(probePath, buffer);
+      mediaProbe = await probeVideo(probePath);
+      if (mediaProbe.hasVideo === false && mediaProbe.hasAudio === true) {
+        detected = { ...detected, category: 'audio', mime: 'audio/mp4', ext: '.m4a' };
+      }
+    } catch { /* retain content-sniffed video classification when probing fails */ } finally {
+      cleanup(probePath);
+    }
+  }
   const ext = detected.ext;
   const originalSize = file.buffer.length;
 
@@ -362,7 +381,7 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
   // created asynchronously by the Phase-8b pipeline.
   if (detected.category !== 'video' || options.streaming !== true) {
     const contentHash = sha256(buffer);
-    const target = await findDedupTarget(project.id, contentHash, access);
+    const target = await findDedupTarget(project.id, contentHash, access, detected.category);
     if (target) {
       return createDedupedFile({
         project, target, options, originalName: file.originalname,
@@ -514,18 +533,20 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
     await client.putBuffer(storageKey, buffer, detected.mime);
     await verifyStoredObject(client, storageKey, buffer.length);
 
-    let duration = null;
-    let width = null;
-    let height = null;
-    const localPath = tmpPath(ext || '.mp4');
-    try {
-      await fs.promises.writeFile(localPath, buffer);
-      const probe = await probeVideo(localPath);
-      duration = probe.duration;
-      width = probe.width;
-      height = probe.height;
-    } catch { /* media metadata is best-effort */ } finally {
-      cleanup(localPath);
+    let duration = mediaProbe?.duration || null;
+    let width = mediaProbe?.width || null;
+    let height = mediaProbe?.height || null;
+    if (!mediaProbe) {
+      const localPath = tmpPath(ext || '.mp4');
+      try {
+        await fs.promises.writeFile(localPath, buffer);
+        const probe = await probeVideo(localPath);
+        duration = probe.duration;
+        width = probe.width;
+        height = probe.height;
+      } catch { /* media metadata is best-effort */ } finally {
+        cleanup(localPath);
+      }
     }
 
     const processingMs = Date.now() - start;
@@ -621,14 +642,18 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
     await client.putBuffer(storageKey, buffer, detected.mime);
     await verifyStoredObject(client, storageKey, buffer.length);
 
-    // Try to get duration
-    let duration = null;
-    try {
+    // Reuse the MP4 stream probe when available; other audio formats only need
+    // a lightweight duration probe.
+    let duration = mediaProbe?.duration || null;
+    if (!duration) {
       const tempPath = tmpPath(ext);
-      await fs.promises.writeFile(tempPath, buffer);
-      duration = await getVideoDuration(tempPath);
-      cleanup(tempPath);
-    } catch { /* noop */ }
+      try {
+        await fs.promises.writeFile(tempPath, buffer);
+        duration = await getVideoDuration(tempPath);
+      } catch { /* duration is optional */ } finally {
+        cleanup(tempPath);
+      }
+    }
 
     const processingMs = Date.now() - start;
     return finalizeSyncUpload({
@@ -636,7 +661,7 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
       backend,
       fileData: {
         projectId: project.id, storageKey, filename: path.basename(storageKey),
-        originalName: file.originalname, folder, type: 'file', mimeType: detected.mime,
+        originalName: file.originalname, folder, type: 'audio', mimeType: detected.mime,
         size: buffer.length, originalSize, duration, checksum,
         status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
       },

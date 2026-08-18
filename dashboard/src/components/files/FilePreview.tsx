@@ -33,9 +33,10 @@ function CopyRow({ text, label }: { text: string; label: string }) {
         navigator.clipboard.writeText(text);
         toast.success(`${label} copied`);
       }}
-      className="group flex w-full items-center gap-2 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-left font-mono text-[11px] transition-colors hover:bg-muted/60"
+      className="group flex w-full items-center gap-3 rounded-md border border-border/50 bg-muted/30 px-3 py-2 text-left transition-colors hover:bg-muted/60"
     >
-      <span className="min-w-0 flex-1 truncate text-muted-foreground">{text}</span>
+      <span className="w-24 shrink-0 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/60">{label}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{text}</span>
       <Copy className="h-3 w-3 shrink-0 text-muted-foreground/50 transition-colors group-hover:text-foreground" />
     </button>
   );
@@ -65,6 +66,7 @@ export default function FilePreview({
   const [uploadingSub, setUploadingSub] = useState(false);
   const isImage = file.type === 'image';
   const isVideo = file.type === 'video';
+  const isAudio = file.type === 'audio' || file.mime_type?.startsWith('audio/');
   const isPlayable = isVideo && (file.has_hls || file.status === 'done');
 
   // The /img base is the /f URL with the file path stripped off.
@@ -176,6 +178,13 @@ export default function FilePreview({
               <div className="w-full">
                 <VideoPlayer file={file} />
               </div>
+            ) : isAudio && file.url ? (
+              <div className="flex w-full flex-col items-center gap-4">
+                <FileTypeIcon type="audio" />
+                <audio className="w-full" controls preload="metadata" src={file.url}>
+                  Your browser does not support audio playback.
+                </audio>
+              </div>
             ) : isVideo ? (
               <div className="flex flex-col items-center gap-3 text-center">
                 <FileTypeIcon type={file.type} />
@@ -236,9 +245,23 @@ export default function FilePreview({
             {/* URLs */}
             <div className="space-y-2">
               <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/60">URLs</p>
-              {file.url && <CopyRow text={file.url} label="URL" />}
+              {file.url && (
+                <CopyRow
+                  text={file.url}
+                  label={isVideo ? 'MP4 file' : isAudio ? 'Audio file' : isImage ? 'Image file' : 'File'}
+                />
+              )}
+              {isVideo && file.has_hls && file.hls_url && file.hls_url !== file.url && (
+                <CopyRow text={file.hls_url} label="HLS stream" />
+              )}
               {file.urls &&
-                Object.entries(file.urls).map(([key, url]) => (
+                Object.entries(file.urls)
+                  .filter(([key, url]) =>
+                    key !== 'original' &&
+                    url !== file.url &&
+                    url !== file.hls_url
+                  )
+                  .map(([key, url]) => (
                   <CopyRow key={key} text={url} label={`${key} URL`} />
                 ))}
             </div>
