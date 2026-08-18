@@ -159,6 +159,11 @@ export interface UploadResult {
   height?: number;
   access: string;
   status: 'done' | 'processing';
+  /** True once adaptive HLS derivatives are available (streaming uploads only). */
+  has_hls?: boolean;
+  video_status?: 'processing' | 'ready' | 'failed';
+  hls_url?: string;
+  poster_url?: string;
   processing_ms: number;
   created_at: string;
 }

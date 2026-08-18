@@ -78,6 +78,17 @@ describe('MediaOS SDK', () => {
       expect(opts.headers['X-API-Key']).toBe('mv_live_test1234567890abcdef');
     });
 
+    it('should POST streaming video uploads to /api/v1/upload/stream', async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse({
+        id: 'video-1', status: 'processing', type: 'video',
+      }));
+
+      await mv.uploadStream(Buffer.from('video-data'), { name: 'clip.mp4' });
+
+      expect(mockFetch.mock.calls[0][0]).toBe('https://cdn.example.com/api/v1/upload/stream');
+      expect(mockFetch.mock.calls[0][1]?.method).toBe('POST');
+    });
+
     it('should include folder and access params', async () => {
       mockFetch.mockResolvedValueOnce(mockResponse({ id: 'file-1' }));
 

@@ -162,6 +162,32 @@ export class MediaOS {
     return this.request<UploadResult>('POST', '/upload', { formData, params, headers });
   }
 
+  /**
+   * Upload a video and opt it into adaptive HLS processing. Normal `upload()`
+   * stores videos as-is and does not create streaming derivatives.
+   */
+  async uploadStream(
+    file: Buffer | Blob,
+    options: UploadOptions = {}
+  ): Promise<UploadResult> {
+    const formData = new FormData();
+
+    if (Buffer.isBuffer(file)) {
+      formData.append('file', new Blob([file]), options.name || 'upload');
+    } else {
+      formData.append('file', file, options.name);
+    }
+
+    const params: Record<string, string | undefined> = {};
+    if (options.folder) params.folder = options.folder;
+    if (options.access) params.access = options.access;
+
+    const headers: Record<string, string> = {};
+    if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
+
+    return this.request<UploadResult>('POST', '/upload/stream', { formData, params, headers });
+  }
+
   // ── Direct one-time uploads ────────────────────────
 
   /** Create a one-time presigned upload grant (no bytes transferred yet). */

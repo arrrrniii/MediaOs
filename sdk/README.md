@@ -73,6 +73,19 @@ const result = await mv.upload(buffer, {
 });
 ```
 
+`upload()` stores videos as-is and makes them available immediately without
+creating additional streaming derivatives. Opt into adaptive HLS processing
+only for videos that need it:
+
+```typescript
+const stream = await mv.uploadStream(videoBuffer, {
+  name: 'clip.mp4',
+  folder: 'videos',
+  idempotencyKey: 'video:stable-source-id',
+});
+// stream.status is initially "processing"; hls_url is available when ready.
+```
+
 **Response:**
 
 ```json
