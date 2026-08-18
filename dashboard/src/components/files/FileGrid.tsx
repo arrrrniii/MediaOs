@@ -15,10 +15,19 @@ export default function FileGrid({
     <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
       {files.map((file) => {
         return (
-          <button
+          <div
             key={file.id}
+            role="button"
+            tabIndex={0}
             onClick={() => onSelect(file)}
-            className="group overflow-hidden rounded-lg border bg-card text-left transition-all hover:border-primary/30 hover:shadow-md"
+            onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onSelect(file);
+              }
+            }}
+            className="group cursor-pointer overflow-hidden rounded-lg border bg-card text-left transition-all hover:border-primary/30 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             <div className="aspect-square overflow-hidden bg-muted/50">
               <MediaThumbnail file={file} />
@@ -29,7 +38,7 @@ export default function FileGrid({
                 {formatBytes(file.size)}
               </p>
             </div>
-          </button>
+          </div>
         );
       })}
     </div>

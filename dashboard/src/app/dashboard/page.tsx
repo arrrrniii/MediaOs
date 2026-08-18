@@ -2,8 +2,8 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { getAccountContext } from '@/lib/session';
 import { accountFetch } from '@/lib/api';
-import { formatBytes, formatRelativeTime } from '@/lib/utils';
-import type { Project, FileRecord, PaginatedResponse } from '@/lib/types';
+import { formatBytes } from '@/lib/utils';
+import type { Project, FileRecord, PaginatedResponse, UsageData } from '@/lib/types';
 import {
   Card,
   CardContent,
@@ -32,18 +32,18 @@ export default async function DashboardPage() {
     }
   }
 
-  const totalFiles = projects.reduce((sum, p) => sum + p.file_count, 0);
-  const totalStorage = projects.reduce((sum, p) => sum + p.storage_used, 0);
+  const totalFiles = projects.reduce((sum, p) => sum + Number(p.file_count || 0), 0);
+  const totalStorage = projects.reduce((sum, p) => sum + Number(p.storage_used || 0), 0);
 
   // Fetch bandwidth across all projects
   let totalBandwidth = 0;
   for (const project of projects) {
     try {
-      const usage = await accountFetch<{ bandwidth_bytes?: number; download_bytes?: number }>(
+      const usage = await accountFetch<UsageData>(
         ctx!,
         `/api/v1/projects/${project.id}/usage`,
       );
-      totalBandwidth += usage.bandwidth_bytes || usage.download_bytes || 0;
+      totalBandwidth += Number(usage.bandwidth?.used || 0);
     } catch {
       // skip
     }
