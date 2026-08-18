@@ -88,6 +88,7 @@ export interface FileRecord {
   access: string;
   status: string;
   thumbnail_key: string | null;
+  thumbnail_url?: string;
   metadata: Record<string, unknown>;
   url: string;
   urls: Record<string, string>;

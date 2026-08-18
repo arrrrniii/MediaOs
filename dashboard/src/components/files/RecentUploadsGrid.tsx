@@ -2,11 +2,12 @@
 
 import { useState } from 'react';
 import { formatBytes } from '@/lib/utils';
-import { FileIcon, X, ExternalLink, Copy } from 'lucide-react';
+import { X, ExternalLink, Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import type { FileRecord } from '@/lib/types';
+import MediaThumbnail from './MediaThumbnail';
 
 interface RecentFile extends FileRecord {
   project_name: string;
@@ -19,8 +20,6 @@ export default function RecentUploadsGrid({ files }: { files: RecentFile[] }) {
     <>
       <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
         {files.map((file) => {
-          const isImage = file.type === 'image';
-          const thumbUrl = file.urls?.original || file.url;
           return (
             <button
               key={file.id}
@@ -28,18 +27,7 @@ export default function RecentUploadsGrid({ files }: { files: RecentFile[] }) {
               className="group overflow-hidden rounded-lg border bg-card text-left transition-all hover:border-primary/30 hover:shadow-md"
             >
               <div className="aspect-square overflow-hidden bg-muted/50">
-                {isImage && thumbUrl ? (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img
-                    src={thumbUrl}
-                    alt={file.filename}
-                    className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center">
-                    <FileIcon className="h-8 w-8 text-muted-foreground/50" />
-                  </div>
-                )}
+                <MediaThumbnail file={file} />
               </div>
               <div className="p-2">
                 <p className="truncate text-xs font-medium">{file.filename}</p>
