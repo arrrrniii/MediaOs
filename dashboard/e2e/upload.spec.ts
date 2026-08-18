@@ -26,7 +26,7 @@ test('upload an image, see it in the grid, preview it, and confirm the served UR
   await expect(page.getByText(/file\(s\) uploaded/i)).toBeVisible({ timeout: 30_000 });
 
   // ── It appears in the file grid ───────────────────────────
-  const fileCard = page.locator('button').filter({ has: page.locator('img') }).first();
+  const fileCard = page.getByRole('button').filter({ has: page.locator('img') }).first();
   await expect(fileCard).toBeVisible({ timeout: 30_000 });
 
   // ── Open the preview ──────────────────────────────────────
