@@ -1,36 +1,67 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { cn } from '@/lib/utils';
-import { Copy, Check } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import {
+  ArrowRight, BookOpen, Check, Copy, KeyRound, Link2, ShieldCheck, UploadCloud,
+} from 'lucide-react';
 
-const API_URL =
-  typeof window !== 'undefined'
-    ? (process.env.NEXT_PUBLIC_API_URL || window.location.origin.replace(/:\d+$/, ':3000'))
-    : '';
+const subscribeToOrigin = () => () => {};
 
-function CopyBlock({ code, lang }: { code: string; lang?: string }) {
+function configuredApiUrl() {
+  const configured = process.env.NEXT_PUBLIC_API_URL;
+  return configured && !configured.includes('localhost')
+    ? configured.replace(/\/$/, '')
+    : null;
+}
+
+function browserApiUrl() {
+  const configured = configuredApiUrl();
+  if (configured) return configured;
+
+  const origin = window.location.origin;
+  if (window.location.hostname.startsWith('cdn-dash.')) {
+    return origin.replace('//cdn-dash.', '//cdn.');
+  }
+  if (window.location.hostname === 'localhost') {
+    return origin.replace(/:\d+$/, ':3000');
+  }
+  return origin;
+}
+
+function serverApiUrl() {
+  return configuredApiUrl() || 'https://cdn.yourdomain.com';
+}
+
+function CopyBlock({ code, lang = 'shell' }: { code: string; lang?: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="group relative">
-      <pre className="overflow-x-auto rounded-lg border border-border/50 bg-muted/30 p-4 text-[13px] leading-relaxed">
+    <div className="group overflow-hidden rounded-lg border border-border/60 bg-background/70">
+      <div className="flex h-9 items-center justify-between border-b border-border/50 px-3">
+        <span className="font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/60">{lang}</span>
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(code);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          }}
+          aria-label="Copy code"
+          className="flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-4 text-[13px] leading-relaxed">
         <code>{code}</code>
       </pre>
-      <button
-        onClick={() => {
-          navigator.clipboard.writeText(code);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        }}
-        className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 backdrop-blur transition-all hover:text-foreground group-hover:opacity-100"
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
     </div>
   );
 }
 
-const sections = [
+function getSections(API_URL: string) {
+  return [
   {
     id: 'authentication',
     title: 'Authentication',
@@ -49,7 +80,7 @@ const sections = [
     content: (
       <div className="space-y-4">
         <div>
-          <h4 className="mb-1 text-sm font-semibold">Single Upload</h4>
+          <h4 className="mb-1 text-sm font-semibold">Standard upload · storage only</h4>
           <p className="mb-2 text-sm text-muted-foreground">
             <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">POST /api/v1/upload</code> — Multipart form-data with a <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">file</code> field.
           </p>
@@ -59,8 +90,22 @@ const sections = [
   -F "folder=avatars" \\
   -F "access=public"`} />
           <p className="mt-2 text-sm text-muted-foreground">
-            Images are automatically converted to WebP. Videos are transcoded to MP4 (returns <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">202</code> while processing).
+            Images get an optimized WebP delivery copy. Video and audio are stored without HLS transcoding, so standard uploads are available quickly and do not create streaming derivatives. Audio-only MP4 containers are normalized to <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">audio/mp4</code> and <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">.m4a</code>.
           </p>
+        </div>
+        <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <h4 className="text-sm font-semibold">Adaptive video streaming · opt in</h4>
+            <Badge variant="outline" className="border-primary/30 text-primary">HLS</Badge>
+          </div>
+          <p className="mb-3 text-sm text-muted-foreground">
+            Use <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">POST /api/v1/upload/stream</code> only when a video needs adaptive HLS playback. This endpoint queues MP4/HLS processing and can return <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">202</code> while renditions are prepared.
+          </p>
+          <CopyBlock code={`curl -X POST ${API_URL}/api/v1/upload/stream \\
+  -H "X-API-Key: mv_live_your_key_here" \\
+  -F "file=@video.mp4" \\
+  -F "folder=streaming" \\
+  -F "access=public"`} />
         </div>
         <div>
           <h4 className="mb-1 text-sm font-semibold">Bulk Upload (up to 20 files)</h4>
@@ -93,8 +138,20 @@ const sections = [
       <div className="space-y-4">
         <p>Files are served directly from your MediaOS domain. Use the URLs returned from the upload response.</p>
         <div>
-          <h4 className="mb-1 text-sm font-semibold">Original File</h4>
-          <CopyBlock code={`${API_URL}/f/{project_id}/{folder}/{filename}.webp`} />
+          <h4 className="mb-1 text-sm font-semibold">Direct file delivery</h4>
+          <CopyBlock code={`${API_URL}/f/{project_id}/{folder}/{filename}`} />
+          <p className="mt-2 text-sm text-muted-foreground">
+            Standard video and audio playback uses this direct CDN URL and supports browser byte-range requests. A normal upload does not include a separate streaming URL.
+          </p>
+        </div>
+        <div>
+          <h4 className="mb-1 text-sm font-semibold">HLS delivery</h4>
+          <CopyBlock lang="typescript" code={`const playbackUrl = file.has_hls && file.hls_url
+  ? file.hls_url
+  : file.url; // direct MP4 fallback while HLS is processing`} />
+          <p className="mt-2 text-sm text-muted-foreground">
+            The upload response exposes <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">has_hls</code> and <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">hls_url</code> after an explicit streaming upload finishes. Until then, use the returned <code className="rounded bg-muted px-1.5 py-0.5 text-[13px]">url</code> as the source fallback.
+          </p>
         </div>
         <div>
           <h4 className="mb-1 text-sm font-semibold">Dynamic Image Resizing</h4>
@@ -228,31 +285,37 @@ curl "${API_URL}/api/v1/files/{file_id}/signed-url?expires=3600" \\
     title: 'JavaScript SDK',
     content: (
       <div className="space-y-4">
-        <CopyBlock code="npm install @mediavault/sdk" />
-        <CopyBlock code={`import { MediaVault } from '@mediavault/sdk';
+        <CopyBlock code="npm install @mediaos/sdk" />
+        <CopyBlock lang="typescript" code={`import { MediaOS } from '@mediaos/sdk';
 
-const mv = new MediaVault({
-  baseUrl: '${API_URL}',
+const media = new MediaOS({
+  url: '${API_URL}',
   apiKey: 'mv_live_your_key_here',
 });
 
-// Upload
-const file = await mv.upload(buffer, {
-  filename: 'photo.jpg',
+// Fast storage-only upload (video/audio are not transcoded)
+const file = await media.upload(buffer, {
+  name: 'photo.jpg',
   folder: 'avatars',
 });
 
+// Explicit adaptive streaming upload for video
+const stream = await media.uploadStream(videoBuffer, {
+  name: 'launch.mp4',
+  folder: 'streaming',
+});
+
 // List files
-const files = await mv.files.list({ type: 'image', limit: 20 });
+const files = await media.files.list({ type: 'image', limit: 20 });
 
 // Get file
-const file = await mv.files.get('file-id');
+const asset = await media.files.get('file-id');
 
 // Delete
-await mv.files.delete('file-id');
+await media.files.delete('file-id');
 
 // Signed URL
-const { url } = await mv.files.signedUrl('file-id', { expires: 3600 });`} />
+const { url } = await media.files.signedUrl('file-id', { expires: 3600 });`} />
       </div>
     ),
   },
@@ -278,7 +341,7 @@ const { url } = await mv.files.signedUrl('file-id', { expires: 3600 });`} />
         </div>
         <div>
           <h4 className="mb-1 text-sm font-semibold">Verify Signature</h4>
-          <CopyBlock code={`const crypto = require('crypto');
+          <CopyBlock lang="javascript" code={`const crypto = require('crypto');
 
 function verifyWebhook(body, signature, secret) {
   const expected = crypto
@@ -347,24 +410,55 @@ dashboard.yourdomain.com {
       </div>
     ),
   },
-];
+  ];
+}
 
 export default function DocsPage() {
-  const [active, setActive] = useState(sections[0].id);
+  const [active, setActive] = useState('authentication');
+  const apiUrl = useSyncExternalStore(subscribeToOrigin, browserApiUrl, serverApiUrl);
+
+  const sections = getSections(apiUrl);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">API Documentation</h2>
-        <p className="text-muted-foreground">
-          Everything you need to integrate MediaOS into your application.
-        </p>
+    <div className="space-y-8">
+      <div className="relative overflow-hidden rounded-2xl border border-primary/20 bg-card p-6 shadow-sm sm:p-8">
+        <div className="pointer-events-none absolute -right-24 -top-28 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
+        <div className="relative max-w-3xl">
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="gap-1.5 border-primary/30 bg-primary/5 text-primary">
+              <BookOpen className="h-3 w-3" /> API v1
+            </Badge>
+            <span className="font-mono text-xs text-muted-foreground">{apiUrl}</span>
+          </div>
+          <h2 className="max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">From upload to a production URL.</h2>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+            Store ordinary media immediately. Opt into adaptive processing only for videos that truly need HLS streaming.
+          </p>
+        </div>
+
+        <div className="relative mt-7 grid gap-3 md:grid-cols-3">
+          {[
+            { icon: KeyRound, step: '1', title: 'Create a scoped key', body: 'Open a project and grant only the upload and read scopes your app needs.' },
+            { icon: UploadCloud, step: '2', title: 'Choose the upload path', body: 'Use standard upload for storage, or the streaming endpoint for adaptive video.' },
+            { icon: Link2, step: '3', title: 'Deliver the returned URL', body: 'Use the direct file URL immediately and HLS only when it becomes available.' },
+          ].map((item, index) => (
+            <div key={item.step} className="relative rounded-xl border border-border/60 bg-background/60 p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary"><item.icon className="h-4 w-4" /></div>
+                <div><p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Step {item.step}</p><p className="text-sm font-semibold">{item.title}</p></div>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-muted-foreground">{item.body}</p>
+              {index < 2 && <ArrowRight className="absolute -right-5 top-1/2 z-10 hidden h-4 w-4 text-muted-foreground/40 md:block" />}
+            </div>
+          ))}
+        </div>
       </div>
 
-      <div className="flex gap-6">
+      <div className="flex flex-col gap-6 lg:flex-row lg:gap-8">
         {/* Sticky sidebar nav */}
-        <nav className="hidden w-48 shrink-0 lg:block">
-          <div className="sticky top-6 space-y-0.5">
+        <nav className="hidden w-52 shrink-0 lg:block">
+          <div className="sticky top-6 rounded-xl border border-border/60 bg-card p-2 shadow-sm">
+            <p className="px-3 pb-2 pt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">On this page</p>
             {sections.map((s) => (
               <button
                 key={s.id}
@@ -373,7 +467,7 @@ export default function DocsPage() {
                   document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }}
                 className={cn(
-                  'block w-full rounded-md px-3 py-1.5 text-left text-[13px] transition-colors',
+                  'block w-full rounded-md px-3 py-2 text-left text-[13px] transition-colors',
                   active === s.id
                     ? 'bg-primary/10 font-medium text-primary'
                     : 'text-muted-foreground hover:text-foreground',
@@ -385,14 +479,39 @@ export default function DocsPage() {
           </div>
         </nav>
 
-        {/* Content */}
-        <div className="min-w-0 flex-1 space-y-10">
+        <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 lg:hidden">
           {sections.map((s) => (
-            <section key={s.id} id={s.id}>
-              <h3 className="mb-4 text-lg font-semibold">{s.title}</h3>
+            <button
+              key={s.id}
+              onClick={() => {
+                setActive(s.id);
+                document.getElementById(s.id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
+              className={cn(
+                'shrink-0 rounded-full border px-3 py-1.5 text-xs',
+                active === s.id ? 'border-primary/40 bg-primary/10 text-primary' : 'border-border text-muted-foreground',
+              )}
+            >
+              {s.title}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="min-w-0 flex-1 space-y-6">
+          {sections.map((s) => (
+            <section key={s.id} id={s.id} className="scroll-mt-6 rounded-xl border border-border/60 bg-card p-5 shadow-sm sm:p-6">
+              <div className="mb-5 flex items-center gap-3 border-b border-border/50 pb-4">
+                <div className="h-2 w-2 rounded-full bg-primary" />
+                <h3 className="text-lg font-semibold">{s.title}</h3>
+              </div>
               <div className="text-sm leading-relaxed">{s.content}</div>
             </section>
           ))}
+          <div className="flex items-start gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+            <p className="text-muted-foreground"><span className="font-medium text-foreground">Production note.</span> Keep API keys server-side, use signed access for private media, and prefer scoped keys over full access.</p>
+          </div>
         </div>
       </div>
     </div>

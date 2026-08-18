@@ -20,8 +20,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { RefreshCw, MoreHorizontal, Bell } from 'lucide-react';
-import { formatBytes, formatRelativeTime } from '@/lib/utils';
+import {
+  ArchiveRestore, Bell, Clock3, Copy, MoreHorizontal, RefreshCw, Sparkles,
+} from 'lucide-react';
+import { formatBytes, formatDateTime, formatRelativeTime } from '@/lib/utils';
 
 interface InboxRow {
   file: { id: string; name: string };
@@ -36,6 +38,7 @@ interface InboxRow {
   retention_until: string | null;
   protected: boolean;
   suggested_action: string;
+  updated_at: string | null;
 }
 
 // action id → label + whether it is destructive/admin.
@@ -61,6 +64,7 @@ export default function LifecyclePage() {
   const [loading, setLoading] = useState(true);
   const [unread, setUnread] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
   const fetchInbox = useCallback(async () => {
     setLoading(true);
@@ -70,6 +74,7 @@ export default function LifecyclePage() {
         const data = await res.json();
         setRows(data.data || []);
         setTotal(data.total || 0);
+        setLastRefresh(new Date());
       }
     } catch {
       // handled by empty state
@@ -122,16 +127,23 @@ export default function LifecyclePage() {
     }
   }
 
+  const reclaimableBytes = rows.reduce((sum, row) => sum + row.estimated_savings, 0);
+  const extraCopies = rows.reduce((sum, row) => sum + Math.max(0, row.physical_copies - 1), 0);
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-7">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight">Lifecycle</h2>
-          <p className="text-muted-foreground">
-            Inactive files flagged for review. Archive cold data, protect what matters, or clean up.
-          </p>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary">Storage hygiene</p>
+          <h2 className="text-3xl font-semibold tracking-tight">Lifecycle review</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Decide what stays hot, what moves to archive, and what can be removed.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {lastRefresh && (
+            <span className="mr-1 flex items-center gap-1.5 text-xs text-muted-foreground" title={formatDateTime(lastRefresh.toISOString())}>
+              <Clock3 className="h-3.5 w-3.5" /> Refreshed {formatRelativeTime(lastRefresh.toISOString())}
+            </span>
+          )}
           <Badge variant={unread > 0 ? 'default' : 'secondary'} className="gap-1">
             <Bell className="h-3.5 w-3.5" />
             {unread} to review
@@ -143,61 +155,83 @@ export default function LifecyclePage() {
         </div>
       </div>
 
+      <div className="grid overflow-hidden rounded-xl border border-border/70 bg-border/70 sm:grid-cols-3">
+        {[
+          { label: 'Files to review', value: total.toLocaleString(), icon: Bell, note: `${unread} unread notices` },
+          { label: 'Potential savings', value: formatBytes(reclaimableBytes), icon: Sparkles, note: `Across ${rows.length} loaded files` },
+          { label: 'Extra copies', value: extraCopies.toLocaleString(), icon: Copy, note: 'Loaded copies beyond one primary' },
+        ].map((item) => (
+          <div key={item.label} className="flex items-center gap-4 bg-card px-5 py-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <item.icon className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground">{item.label}</p>
+              <p className="mt-0.5 text-xl font-semibold tabular-nums">{item.value}</p>
+              <p className="truncate text-[11px] text-muted-foreground/70">{item.note}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
       {loading ? (
-        <div className="py-12 text-center text-muted-foreground">Loading...</div>
+        <div className="rounded-xl border border-dashed py-16 text-center text-sm text-muted-foreground">Loading lifecycle review…</div>
       ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-dashed py-12 text-center text-muted-foreground">
-          <p className="font-medium">Nothing to review</p>
-          <p className="text-sm">The scanner has not flagged any cold or deletion candidates.</p>
+        <div className="rounded-xl border border-dashed py-16 text-center text-muted-foreground">
+          <ArchiveRestore className="mx-auto mb-3 h-6 w-6 text-primary" />
+          <p className="font-medium text-foreground">Nothing to review</p>
+          <p className="mt-1 text-sm">The scanner has not flagged any cold or deletion candidates.</p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border">
+        <div className="overflow-x-auto rounded-xl border border-border/70 bg-card">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>File</TableHead>
-                <TableHead>Project</TableHead>
-                <TableHead>State</TableHead>
-                <TableHead className="text-right">Size</TableHead>
-                <TableHead className="text-right">Copies</TableHead>
+              <TableRow className="bg-muted/25 hover:bg-muted/25">
+                <TableHead>Asset</TableHead>
+                <TableHead>Lifecycle state</TableHead>
+                <TableHead>Footprint</TableHead>
+                <TableHead>Activity</TableHead>
                 <TableHead>Tier</TableHead>
-                <TableHead>Last access</TableHead>
-                <TableHead className="text-right">Accesses</TableHead>
-                <TableHead className="text-right">Est. savings</TableHead>
+                <TableHead className="text-right">Potential savings</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((row) => (
-                <TableRow key={row.file.id}>
-                  <TableCell className="max-w-[200px] truncate font-medium" title={row.file.name}>
-                    {row.file.name}
+                <TableRow key={row.file.id} className="group">
+                  <TableCell className="max-w-[280px]">
+                    <p className="truncate font-medium" title={row.file.name}>{row.file.name}</p>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">{row.project.name}</p>
                     {row.protected && (
-                      <Badge variant="outline" className="ml-2">protected</Badge>
+                      <Badge variant="outline" className="mt-2">protected</Badge>
                     )}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">{row.project.name}</TableCell>
                   <TableCell>
                     <Badge variant={stateVariant(row.lifecycle_state)}>
                       {row.lifecycle_state.replace(/_/g, ' ')}
                     </Badge>
+                    <p className="mt-1.5 text-xs text-muted-foreground" title={row.updated_at ? formatDateTime(row.updated_at) : undefined}>
+                      Updated {row.updated_at ? formatRelativeTime(row.updated_at) : 'unknown'}
+                    </p>
                   </TableCell>
-                  <TableCell className="text-right">{formatBytes(row.size)}</TableCell>
-                  <TableCell className="text-right">{row.physical_copies}</TableCell>
                   <TableCell>
-                    <code className="font-mono text-xs">{row.current_tier}</code>
+                    <p className="font-medium tabular-nums">{formatBytes(row.size)}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{row.physical_copies} physical {row.physical_copies === 1 ? 'copy' : 'copies'}</p>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {row.last_access ? formatRelativeTime(row.last_access) : 'never'}
+                  <TableCell>
+                    <p className="text-sm">{row.last_access ? formatRelativeTime(row.last_access) : 'Never accessed'}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{row.access_count.toLocaleString()} total accesses</p>
                   </TableCell>
-                  <TableCell className="text-right">{row.access_count}</TableCell>
-                  <TableCell className="text-right font-medium">
+                  <TableCell>
+                    <code className="rounded-md bg-muted px-2 py-1 font-mono text-xs">{row.current_tier}</code>
+                  </TableCell>
+                  <TableCell className="text-right font-semibold tabular-nums">
                     {formatBytes(row.estimated_savings)}
                   </TableCell>
                   <TableCell>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" disabled={busy === row.file.id}>
+                        <Button variant="ghost" size="icon" disabled={busy === row.file.id} aria-label={`Actions for ${row.file.name}`}>
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>

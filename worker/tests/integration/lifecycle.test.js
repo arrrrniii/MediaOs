@@ -18,7 +18,7 @@ describe('Lifecycle inbox API', () => {
       mockDb.onQuery('LEFT JOIN LATERAL', {
         rows: [{
           id: 'f1', filename: 'old.webp', lifecycle_state: 'cold_candidate',
-          last_accessed_at: null, access_count: 0, retention_until: null, file_size: 900,
+          last_accessed_at: null, access_count: 0, updated_at: '2026-08-18T08:00:00.000Z', retention_until: null, file_size: 900,
           protected_from_delete: false, project_id: 'proj-1', project_name: 'Proj',
           physical_copies: 2, total_bytes: '1500', cold_candidate_bytes: '1200', current_tier: 'hot',
         }],
@@ -38,6 +38,7 @@ describe('Lifecycle inbox API', () => {
       expect(row.physical_copies).toBe(2);
       expect(row.estimated_savings).toBe(1200);
       expect(row.current_tier).toBe('hot');
+      expect(row.updated_at).toBe('2026-08-18T08:00:00.000Z');
       expect(row.suggested_action).toBe('archive_source');
 
       // Account isolation: both queries are bound to the caller's account.

@@ -51,7 +51,7 @@ router.get('/api/v1/lifecycle/inbox', ...sessionScope, requireRole('viewer'), as
     const total = countRows[0] ? countRows[0].total : 0;
 
     const { rows } = await query(
-      `SELECT f.id, f.filename, f.lifecycle_state, f.last_accessed_at, f.access_count,
+      `SELECT f.id, f.filename, f.lifecycle_state, f.last_accessed_at, f.access_count, f.updated_at,
               f.retention_until, f.size AS file_size, f.protected_from_delete,
               p.id AS project_id, p.name AS project_name,
               COALESCE(o.copies, 0) AS physical_copies,
@@ -85,6 +85,7 @@ router.get('/api/v1/lifecycle/inbox', ...sessionScope, requireRole('viewer'), as
         size: parseInt(r.total_bytes, 10) || 0,
         physical_copies: parseInt(r.physical_copies, 10) || 0,
         last_access: r.last_accessed_at,
+        updated_at: r.updated_at,
         access_count: parseInt(r.access_count, 10) || 0,
         current_tier: r.current_tier || 'hot',
         estimated_savings: coldBytes,
