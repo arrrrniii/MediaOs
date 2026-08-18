@@ -151,7 +151,7 @@ export interface UploadResult {
   url: string;
   storage_key: string;
   urls: FileUrls;
-  type: 'image' | 'video' | 'file';
+  type: 'image' | 'video' | 'audio' | 'document' | 'file';
   mime_type: string;
   size: number;
   original_size: number;
