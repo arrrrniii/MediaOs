@@ -381,7 +381,7 @@ Authorization: Bearer mv_master_xxxxxxxxxxxxxxxxxxxx
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/api/v1/upload` | API Key (`upload`) | Upload and store a single file as-is; videos are immediately available without HLS processing |
+| `POST` | `/api/v1/upload` | API Key (`upload`) | Optimize a single image or store another file; videos are immediately available without HLS processing |
 | `POST` | `/api/v1/upload/stream` | API Key (`upload`) | Upload a video for MP4/HLS streaming processing |
 | `POST` | `/api/v1/upload/bulk` | API Key (`upload`) | Upload up to 20 files |
 
@@ -425,7 +425,15 @@ curl -X POST http://localhost:3000/api/v1/upload/bulk \
 |-----------|------|---------|-------------|
 | `folder` | string | — | Organize files into folders |
 | `name` | string | original filename | Custom display name |
-| `access` | string | `public` | `public` or `private` |
+| `access` | string | project default | `public`, `private`, or `signed` |
+| `image_enhancement` | multipart form string | — | `auto_exposure` for a known photograph uploaded privately through `/api/v1/upload` |
+
+Auto exposure evaluates opaque, single-frame JPEG and WebP images and
+brightens only clearly dark photos with usable detail. An adjusted response has
+`image_enhancement: "auto_exposure_v1"`. The standard WebP dimension limits
+still apply. Adjusted uploads retain the exact bytes MediaOS received as a
+private source, including when the project would normally discard those bytes.
+Only send this field from photo upload flows, such as restaurant dish photos.
 
 #### Files
 

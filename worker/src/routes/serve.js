@@ -630,14 +630,14 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
       [storageKey]
     );
 
-    const fileRow = fileRows[0] || null;
-    // An unknown key is not known to be public, so it gets the private headers.
-    const access = fileRow ? fileRow.access : null;
+    const fileRow = fileRows[0];
+    if (!fileRow) return res.status(404).json({ error: 'File not found', code: 'NOT_FOUND' });
+    const { access } = fileRow;
 
     // Strict transforms: when a project opts in, arbitrary /img/:mode/:w/:h
     // combos are refused — only named variants may be delivered. Default off
     // keeps the current open behavior for back-compat.
-    if (fileRow && isStrictTransforms(fileRow.project_settings)) {
+    if (isStrictTransforms(fileRow.project_settings)) {
       return res.status(403).json({
         error: 'This project only allows named variants. Use /img/v/:variant/...',
         code: 'STRICT_TRANSFORMS',
@@ -647,7 +647,7 @@ router.get('/img/:type/:width/:height/f/:projectId/*', async (req, res, next) =>
     // Negotiate the concrete output format (AVIF/WebP) for signing + rendering.
     const format = negotiateFormat({ requestedFormat, accept: req.headers['accept'] });
 
-    if (fileRow && (access === 'private' || access === 'signed')) {
+    if (!isPublicAccess(access)) {
       const token = req.query.token;
       const expires = req.query.expires;
 
@@ -696,15 +696,12 @@ router.get('/img/v/:variant/f/:projectId/*', async (req, res, next) => {
       'SELECT f.access, f.id, f.project_id, f.cache_version, p.signing_secret FROM files f JOIN projects p ON f.project_id = p.id WHERE f.storage_key = $1 AND f.deleted_at IS NULL',
       [storageKey]
     );
-    const fileRow = fileRows[0] || null;
-    const access = fileRow ? fileRow.access : null;
+    const fileRow = fileRows[0];
+    if (!fileRow) return res.status(404).json({ error: 'File not found', code: 'NOT_FOUND' });
+    const { access } = fileRow;
 
     // Resolve the variant against the file's project (stored, else built-in).
-    // Unknown files still resolve built-ins so serving does not depend on a DB
-    // row existing, but access defaults to private for anything unrecognized.
-    const resolved = await variantService.resolveVariant(
-      fileRow ? fileRow.project_id : projectId, variant
-    );
+    const resolved = await variantService.resolveVariant(fileRow.project_id, variant);
     if (!resolved) {
       return res.status(404).json({
         error: `Unknown variant "${variant}"`,
@@ -727,7 +724,7 @@ router.get('/img/v/:variant/f/:projectId/*', async (req, res, next) => {
       accept: req.headers['accept'],
     });
 
-    if (fileRow && (access === 'private' || access === 'signed')) {
+    if (!isPublicAccess(access)) {
       const token = req.query.token;
       const expires = req.query.expires;
       if (!token || !expires) {
