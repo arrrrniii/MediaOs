@@ -52,6 +52,13 @@ afterEach(() => {
 
 const tick = () => new Promise((r) => setImmediate(r));
 
+it.each(['/img/fit/200/200', '/img/v/thumbnail'])('requires a registered file before rendering %s', async (route) => {
+  const res = await request(app).get(`${route}/f/${KEY}`);
+  expect(res.status).toBe(404);
+  expect(res.body.code).toBe('NOT_FOUND');
+  expect(global.fetch).not.toHaveBeenCalled();
+});
+
 describe('AVIF/WebP negotiation', () => {
   it('renders AVIF when the client advertises image/avif', async () => {
     imgFile({ access: 'public' });

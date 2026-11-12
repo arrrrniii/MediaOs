@@ -31,6 +31,7 @@ function singleUpload(streaming = false) {
         folder: req.query.folder || req.body.folder,
         name: req.query.name || req.body.name,
         access: req.query.access || req.body.access,
+        imageEnhancement: req.body.image_enhancement,
         apiKeyId: req.apiKey.id,
         // Request correlation id (from requestId middleware) threaded into the
         // enqueued media job so it traces back to this upload.

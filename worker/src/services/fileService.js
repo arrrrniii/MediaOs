@@ -3,7 +3,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const sharp = require('sharp');
 const { query, withTransaction } = require('../db');
-const { processImage, isAnimatedGif } = require('./imageProcessor');
+const { processImage, isAnimatedGif, needsAutoExposure } = require('./imageProcessor');
 const { getVideoDuration, probeVideo, cleanup, tmpPath } = require('./videoProcessor');
 const { slugify } = require('../utils/slugify');
 const { detectFileType, isDangerous, sanitizeSvg, svgHasActiveContent } = require('../utils/fileType');
@@ -21,6 +21,8 @@ const SRCSET_WIDTHS = [320, 640, 960, 1280, 1600];
 
 const ACCESS_LEVELS = ['public', 'private', 'signed'];
 const ORIGINAL_POLICIES = ['keep', 'archive', 'temporary', 'discard'];
+const AUTO_EXPOSURE_MIME_TYPES = new Set(['image/jpeg', 'image/webp']);
+const AUTO_EXPOSURE_PROFILE = 'auto_exposure_v1';
 
 // Decompression-bomb guards, applied to image metadata before any pixel work.
 const MAX_IMAGE_PIXELS = parseInt(process.env.MAX_IMAGE_PIXELS || '50000000', 10);
@@ -237,23 +239,22 @@ async function recordIdempotency(projectId, key, fileId) {
 }
 
 /**
- * Find a live file in the same project whose SOURCE bytes match (by
- * content_hash) and whose access level matches. Access must match so a
- * deduped logical file — which shares the canonical file's storage_key — can
- * never expose bytes at a different access level. Returns the CANONICAL file
- * row (following an existing dedup_of so chains collapse to one root).
+ * Find a live file with the same source hash, access and image processing
+ * profile. Aliases share a canonical key, so the access level and treatment
+ * of the canonical bytes must both match. Follow dedup_of to its root.
  */
-async function findDedupTarget(projectId, contentHash, access, type) {
+async function findDedupTarget(projectId, contentHash, access, type, imageEnhancement) {
   if (!contentHash) return null;
   const { rows } = await query(
     `SELECT id, project_id, storage_key, thumbnail_key, type, mime_type, size, width, height,
             checksum, content_hash, access, dedup_of
      FROM files
      WHERE project_id = $1 AND content_hash = $2 AND access = $3 AND type = $4
+       AND (metadata->>'image_enhancement') IS NOT DISTINCT FROM $5::text
        AND deleted_at IS NULL
      ORDER BY (dedup_of IS NULL) DESC, created_at ASC
      LIMIT 1`,
-    [projectId, contentHash, access, type]
+    [projectId, contentHash, access, type, imageEnhancement]
   );
   if (rows.length === 0) return null;
   const match = rows[0];
@@ -278,10 +279,12 @@ async function findDedupTarget(projectId, contentHash, access, type) {
  * still count the logical size (the customer is billed as if they uploaded
  * it); metadata records the bytes dedup saved.
  */
-async function createDedupedFile({ project, target, options, originalName, originalSize, folder, access }) {
+async function createDedupedFile({ project, target, options, originalName, originalSize, folder, access, imageEnhancement }) {
   const slug = slugify(options.name || originalName);
   const filename = path.basename(target.storage_key);
   const savedBytes = parseInt(target.size, 10) || 0;
+  const metadata = { deduped: true, dedup_of: target.id, dedup_saved_bytes: savedBytes };
+  if (imageEnhancement) metadata.image_enhancement = imageEnhancement;
 
   const response = await withTransaction(async (client) => {
     const { rows } = await client.query(
@@ -294,7 +297,7 @@ async function createDedupedFile({ project, target, options, originalName, origi
         project.id, target.storage_key, filename, originalName, folder, target.type, target.mime_type,
         target.size, originalSize, target.width || null, target.height || null,
         access, options.apiKeyId || null, target.checksum || null, target.content_hash || null,
-        target.id, JSON.stringify({ deduped: true, dedup_of: target.id, dedup_saved_bytes: savedBytes }),
+        target.id, JSON.stringify(metadata),
       ]
     );
     const row = rows[0];
@@ -376,16 +379,24 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
     throw uploadError(400, 'STREAMING_REQUIRES_VIDEO', 'The streaming upload endpoint accepts video files only');
   }
 
+  // Explicitly identified private photographs can opt into a correction that
+  // keeps their pre-adjustment bytes. Decide the profile before content dedup.
+  const assessExposure = options.imageEnhancement === 'auto_exposure' &&
+    access === 'private' && detected.source === 'content' && AUTO_EXPOSURE_MIME_TYPES.has(detected.mime);
+  const exposureMetadata = assessExposure ? await imageMetadataWithinLimits(buffer) : undefined;
+  const autoExposure = assessExposure && await needsAutoExposure(buffer, exposureMetadata);
+  const imageEnhancement = autoExposure ? AUTO_EXPOSURE_PROFILE : null;
+
   // Content dedup — storage-only videos participate just like other files.
   // Streaming videos remain excluded because their physical objects are
   // created asynchronously by the Phase-8b pipeline.
   if (detected.category !== 'video' || options.streaming !== true) {
     const contentHash = sha256(buffer);
-    const target = await findDedupTarget(project.id, contentHash, access, detected.category);
+    const target = await findDedupTarget(project.id, contentHash, access, detected.category, imageEnhancement);
     if (target) {
       return createDedupedFile({
         project, target, options, originalName: file.originalname,
-        originalSize, folder, access,
+        originalSize, folder, access, imageEnhancement,
       });
     }
   }
@@ -425,7 +436,7 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
       });
     }
 
-    const imageMetadata = await imageMetadataWithinLimits(buffer);
+    const imageMetadata = assessExposure ? exposureMetadata : await imageMetadataWithinLimits(buffer);
 
     // Animated GIF -> store as-is (preserve animation). The stored object is
     // the source; nothing is optimized.
@@ -455,9 +466,9 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
       });
     }
 
-    // Regular image -> WebP. The WebP is the optimized/canonical object; the
-    // pre-optimization bytes are the source, preserved when policy != discard.
-    const result = await processImage(buffer, {
+    // The optimized WebP is the canonical object. Keep the input as a
+    // separate source when the project policy or an applied correction needs it.
+    const imageOptions = {
       maxWidth: project.settings?.max_width || config.maxWidth,
       maxHeight: project.settings?.max_height || config.maxHeight,
       quality: project.settings?.webp_quality || config.webpQuality,
@@ -465,16 +476,16 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
       // original-preservation policy asks to keep it. The preserved SOURCE
       // object (below) always retains its metadata.
       preserveMetadata: policy.preserveMetadata,
-    });
+    };
+    let result = await processImage(buffer, { ...imageOptions, autoExposure });
 
     const sourceChecksum = sha256(buffer);
-    const optimizedChecksum = sha256(result.buffer);
-    const keepSource = policy.mode !== 'discard';
+    const requireSource = policy.mode !== 'discard';
 
     const pendingObjects = [];
     let retentionUntil = null;
 
-    if (keepSource) {
+    if (requireSource || result.exposureAdjusted) {
       const srcExt = (ext || '').replace(/^\./, '') || 'bin';
       const sourceKey = buildStorageKey(project.id, folder, slug, srcExt);
       const sourceMeta = {};
@@ -487,14 +498,23 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
         sourceMeta.delete_after = retentionUntil.toISOString();
       }
 
-      await client.putBuffer(sourceKey, buffer, detected.mime);
-      await verifyStoredObject(client, sourceKey, buffer.length);
-      pendingObjects.push({
-        role: 'source', storageKey: sourceKey, mimeType: detected.mime, size: buffer.length,
-        checksum: sourceChecksum, width: imageMetadata?.width, height: imageMetadata?.height, metadata: sourceMeta,
-      });
+      try {
+        await client.putBuffer(sourceKey, buffer, detected.mime);
+        await verifyStoredObject(client, sourceKey, buffer.length);
+        pendingObjects.push({
+          role: 'source', storageKey: sourceKey, mimeType: detected.mime, size: buffer.length,
+          checksum: sourceChecksum, width: imageMetadata?.width, height: imageMetadata?.height, metadata: sourceMeta,
+        });
+      } catch (error) {
+        if (requireSource) throw error;
+        // An optional correction must leave an unmodified source. If it could
+        // not be stored, abandon the correction and finish the normal upload.
+        await client.removeObject(sourceKey).catch(() => {});
+        result = await processImage(buffer, imageOptions);
+      }
     }
 
+    const optimizedChecksum = sha256(result.buffer);
     const storageKey = buildStorageKey(project.id, folder, slug, 'webp');
     await client.putBuffer(storageKey, result.buffer, 'image/webp');
     await verifyStoredObject(client, storageKey, result.size);
@@ -505,7 +525,7 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
 
     // files.checksum is the source/canonical checksum: the source when kept,
     // otherwise the canonical optimized rendition.
-    const canonicalChecksum = keepSource ? sourceChecksum : optimizedChecksum;
+    const canonicalChecksum = requireSource || result.exposureAdjusted ? sourceChecksum : optimizedChecksum;
 
     const processingMs = Date.now() - start;
     return finalizeSyncUpload({
@@ -518,6 +538,7 @@ async function _uploadFileImpl(file, project, options = {}, queue = null) {
         contentHash: sourceChecksum,
         height: result.height, status: 'done', processingMs, access, uploadedBy: options.apiKeyId,
         retentionUntil,
+        metadata: result.exposureAdjusted ? { image_enhancement: AUTO_EXPOSURE_PROFILE } : undefined,
       },
       pendingObjects,
     });
@@ -775,8 +796,8 @@ async function insertFileRecord(data, client = null) {
   const { rows } = await exec(
     `INSERT INTO files (project_id, storage_key, filename, original_name, folder, type, mime_type,
      size, original_size, width, height, duration, thumbnail_key, status, processing_ms, access,
-     uploaded_by, checksum, retention_until, content_hash, dedup_of)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+     uploaded_by, checksum, retention_until, content_hash, dedup_of, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
      RETURNING *`,
     [
       data.projectId, data.storageKey, data.filename, data.originalName, data.folder,
@@ -784,6 +805,7 @@ async function insertFileRecord(data, client = null) {
       data.height || null, data.duration || null, data.thumbnailKey || null,
       data.status, data.processingMs, data.access, data.uploadedBy || null,
       data.checksum || null, data.retentionUntil || null, contentHash, data.dedupOf || null,
+      JSON.stringify(data.metadata || {}),
     ]
   );
   return rows[0];
@@ -843,6 +865,10 @@ function formatResponse(row, projectId, objects = []) {
     processing_ms: row.processing_ms,
     created_at: row.created_at,
   };
+
+  if (row.metadata?.image_enhancement === AUTO_EXPOSURE_PROFILE) {
+    response.image_enhancement = AUTO_EXPOSURE_PROFILE;
+  }
 
   // Video playback surface — only present once the HLS pipeline has run. The
   // hls_url points at the master playlist; for private/signed videos it 403s
